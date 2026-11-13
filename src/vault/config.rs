@@ -9,6 +9,7 @@ use std::{
 };
 
 use oauth2::url::Url;
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::vault::{Error, Result};
@@ -22,8 +23,6 @@ const SECRET_KEYS: [&str; 6] = [
     "client_secret",
     "username",
 ];
-/// Keys valid for every profile.
-const COMMON_KEYS: [&str; 3] = ["host", "type", "nix"];
 /// Keys valid inside `[<name>.oauth2]`.
 const OAUTH_KEYS: [&str; 6] = [
     "client_id",
@@ -35,20 +34,24 @@ const OAUTH_KEYS: [&str; 6] = [
 ];
 
 /// How an access token is rendered for Nix.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub enum Style {
     /// `<host>=<token>`
+    #[serde(rename = "plain")]
     Plain,
     /// `<host>=OAuth2:<token>` (oauth2) or `<host>=PAT:<token>` (basic)
+    #[serde(rename = "typed")]
     Typed,
 }
 
 /// The OAuth flow used to log in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub enum Flow {
     /// Device authorization grant.
+    #[serde(rename = "device")]
     Device,
     /// Authorization code grant with PKCE.
+    #[serde(rename = "authorization_code")]
     AuthorizationCode,
 }
 
@@ -286,26 +289,6 @@ fn use_error(profile: &str) -> Error {
     ))
 }
 
-fn missing(profile: &str, key: &str) -> Error {
-    Error::config(format!(
-        "profile \"{profile}\": missing required key \"{key}\""
-    ))
-}
-
-fn string_value(profile: &str, table: &toml::Table, key: &str) -> Result<Option<String>> {
-    match table.get(key) {
-        None => Ok(None),
-        Some(toml::Value::String(s)) if !s.is_empty() => Ok(Some(s.clone())),
-        Some(_) => Err(Error::config(format!(
-            "profile \"{profile}\": \"{key}\" must be a non-empty string"
-        ))),
-    }
-}
-
-fn required_string(profile: &str, table: &toml::Table, key: &str) -> Result<String> {
-    string_value(profile, table, key)?.ok_or_else(|| missing(profile, key))
-}
-
 fn parse_host(profile: &str, host: &str) -> Result<String> {
     let valid = !host.is_empty()
         && host
@@ -335,98 +318,248 @@ fn check_endpoint(profile: &str, key: &str, value: &str) -> Result<()> {
     }
 }
 
-fn parse_profile(name: &str, table: &toml::Table) -> Result<Profile> {
-    for key in table.keys() {
-        let key = key.as_str();
+/// What the TOML file may hold for a `basic` profile. Serde checks names, types, enums and
+/// unknown keys; `validate` applies the rules that span fields.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawBasic {
+    host: String,
+    nix: Option<RawNix>,
+    // `type` was read to pick this struct
+    #[serde(rename = "type")]
+    _type: String,
+}
+
+/// What the TOML file may hold for an `oauth2` profile.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawOAuth2Profile {
+    host: String,
+    oauth2: RawOAuth,
+    nix: Option<RawNix>,
+    #[serde(rename = "type")]
+    _type: String,
+}
+
+enum RawProfile {
+    Basic(RawBasic),
+    OAuth2(RawOAuth2Profile),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawOAuth {
+    client_id: String,
+    flow: Flow,
+    device_authorization_endpoint: Option<String>,
+    authorization_endpoint: Option<String>,
+    token_endpoint: String,
+    #[serde(default)]
+    scopes: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawNix {
+    r#use: Option<Vec<Mechanism>>,
+    access_token_style: Option<Style>,
+}
+
+#[derive(Deserialize, Clone, Copy, PartialEq)]
+enum Mechanism {
+    #[serde(rename = "access-token")]
+    AccessToken,
+    #[serde(rename = "netrc")]
+    Netrc,
+}
+
+/// Rejects, with the messages the contract promises, the keys that must never be in the file and
+/// the keys of earlier formats or in the wrong table. Runs before serde so those messages win.
+fn precheck(name: &str, table: &toml::Table) -> Result<()> {
+    for key in table.keys().map(String::as_str) {
         if SECRET_KEYS.contains(&key) {
             return Err(secret_error(name, key));
         }
+        let moved = |what: String| Error::config(format!("profile \"{name}\": {what}"));
         match key {
             "access-token" => {
-                return Err(Error::config(format!(
-                    "profile \"{name}\": [{name}.access-token] was replaced by [{name}.nix] \
-                     (use = [\"access-token\"], access_token_style = \"plain\" or \"typed\")"
+                return Err(moved(format!(
+                    "[{name}.access-token] was replaced by [{name}.nix] (use = \
+                     [\"access-token\"], access_token_style = \"plain\" or \"typed\")"
                 )))
             }
             "netrc" => {
-                return Err(Error::config(format!(
-                    "profile \"{name}\": [{name}.netrc] was replaced by [{name}.nix] \
-                     (use = [\"netrc\"])"
+                return Err(moved(format!(
+                    "[{name}.netrc] was replaced by [{name}.nix] (use = [\"netrc\"])"
                 )))
             }
             "style" => {
-                return Err(Error::config(format!(
-                    "profile \"{name}\": \"style\" was renamed to \"access_token_style\" in \
-                     [{name}.nix]"
+                return Err(moved(format!(
+                    "\"style\" was renamed to \"access_token_style\" in [{name}.nix]"
                 )))
             }
-            "access-token-style" => {
-                return Err(renamed_style_key(name));
-            }
+            "access-token-style" => return Err(renamed_style_key(name)),
             "use" | "access_token_style" => {
-                return Err(Error::config(format!(
-                    "profile \"{name}\": \"{key}\" belongs in [{name}.nix]"
-                )))
+                return Err(moved(format!("\"{key}\" belongs in [{name}.nix]")))
+            }
+            k if OAUTH_KEYS.contains(&k) => {
+                return Err(moved(format!("\"{k}\" belongs in [{name}.oauth2]")))
             }
             _ => {}
         }
     }
+    for section in ["oauth2", "nix"] {
+        let Some(toml::Value::Table(inner)) = table.get(section) else {
+            continue;
+        };
+        for key in inner.keys().map(String::as_str) {
+            if SECRET_KEYS.contains(&key) {
+                return Err(secret_error(name, key));
+            }
+            if section == "nix" && key == "access-token-style" {
+                return Err(renamed_style_key(name));
+            }
+        }
+    }
+    Ok(())
+}
 
-    let kind_name = required_string(name, table, "type")?;
-    let is_oauth = match kind_name.as_str() {
-        "basic" => false,
-        "oauth2" => true,
-        _ => {
+/// Turns a serde error into the contract's message. The path says which key holds the wrong
+/// value; the offending value itself is never quoted, since it could be a secret pasted into the
+/// wrong place.
+fn shape_error(name: &str, path: &str, message: &str, table: &toml::Table) -> Error {
+    let config = |text: String| Error::config(format!("profile \"{name}\": {text}"));
+    let quoted = |prefix: &str| {
+        let rest = message.strip_prefix(prefix)?;
+        Some(rest.split('`').next()?.to_string())
+    };
+    if message.starts_with("missing field `oauth2`") {
+        return config(format!("missing required table [{name}.oauth2]"));
+    }
+    if let Some(key) = quoted("missing field `") {
+        return config(format!("missing required key \"{key}\""));
+    }
+    if let Some(key) = quoted("unknown field `") {
+        if key == "oauth2" {
+            return config("\"oauth2\" is only valid for oauth2 profiles".into());
+        }
+        return unknown_key(name, &key);
+    }
+    match path {
+        "oauth2.flow" => config("\"flow\" must be \"device\" or \"authorization_code\"".into()),
+        "nix.access_token_style" => {
+            let old = table
+                .get("nix")
+                .and_then(|n| n.get("access_token_style"))
+                .and_then(|v| v.as_str());
+            match old {
+                Some(old @ ("github" | "gitlab")) => {
+                    let new = if old == "github" { "plain" } else { "typed" };
+                    config(format!(
+                        "style \"{old}\" was renamed to \"{new}\" in [{name}.nix]"
+                    ))
+                }
+                _ => style_error(name),
+            }
+        }
+        p if p.starts_with("nix.use") => use_error(name),
+        "oauth2.scopes" => config("\"scopes\" must be an array of strings".into()),
+        p if p.starts_with("oauth2.scopes") => {
+            config("\"scopes\" items must be non-empty strings without whitespace".into())
+        }
+        p => {
+            let key = p.rsplit('.').next().unwrap_or(p);
+            // Serde words a type mismatch as "invalid type: <value>, expected <what>"
+            match message.rsplit_once(", expected ") {
+                Some((_, what)) => {
+                    let what = match what {
+                        "a sequence" => "an array",
+                        "a map" => "a table",
+                        other if other.starts_with("struct ") => "a table",
+                        other => other,
+                    };
+                    config(format!("\"{key}\" must be {what}"))
+                }
+                None => config(format!("\"{key}\" has an invalid value")),
+            }
+        }
+    }
+}
+
+fn parse_profile(name: &str, table: &toml::Table) -> Result<Profile> {
+    precheck(name, table)?;
+    let value = || toml::Value::Table(table.clone());
+    let fail = |e: serde_path_to_error::Error<toml::de::Error>| {
+        shape_error(name, &e.path().to_string(), e.inner().message(), table)
+    };
+    // `type` picks the struct, so each type accepts exactly its own keys
+    let raw = match table.get("type").and_then(|t| t.as_str()) {
+        Some("basic") => {
+            RawProfile::Basic(serde_path_to_error::deserialize(value()).map_err(fail)?)
+        }
+        Some("oauth2") => {
+            RawProfile::OAuth2(serde_path_to_error::deserialize(value()).map_err(fail)?)
+        }
+        None => {
+            return Err(Error::config(format!(
+                "profile \"{name}\": missing required key \"type\""
+            )))
+        }
+        Some(_) => {
             return Err(Error::config(format!(
                 "profile \"{name}\": \"type\" must be \"basic\" or \"oauth2\""
             )))
         }
     };
-    for key in table.keys() {
-        let key = key.as_str();
-        if COMMON_KEYS.contains(&key) {
-            continue;
-        }
-        if key == "oauth2" {
-            if is_oauth {
-                continue;
-            }
-            return Err(Error::config(format!(
-                "profile \"{name}\": \"oauth2\" is only valid for oauth2 profiles"
-            )));
-        }
-        if OAUTH_KEYS.contains(&key) {
-            return Err(Error::config(format!(
-                "profile \"{name}\": \"{key}\" belongs in [{name}.oauth2]"
-            )));
-        }
-        return Err(unknown_key(name, key));
+    validate(name, raw)
+}
+
+fn nonempty(name: &str, key: &str, value: &str) -> Result<()> {
+    if value.is_empty() {
+        return Err(Error::config(format!(
+            "profile \"{name}\": \"{key}\" must be a non-empty string"
+        )));
     }
+    Ok(())
+}
 
-    let host = parse_host(name, &required_string(name, table, "host")?)?;
-
-    let kind = if is_oauth {
-        let oauth = match table.get("oauth2") {
-            Some(toml::Value::Table(oauth)) => oauth,
-            Some(_) => {
-                return Err(Error::config(format!(
-                    "profile \"{name}\": \"oauth2\" must be a table"
-                )))
-            }
-            None => {
-                return Err(Error::config(format!(
-                    "profile \"{name}\": missing required table [{name}.oauth2]"
-                )))
-            }
-        };
-        Kind::OAuth2(parse_oauth(name, oauth)?)
-    } else {
-        Kind::Basic
+/// The rules that span fields: the endpoints each flow needs, `use` and the style.
+fn validate(name: &str, raw: RawProfile) -> Result<Profile> {
+    let config = |text: String| Error::config(format!("profile \"{name}\": {text}"));
+    // The type decides the default delivery: (access token, netrc)
+    let (host, kind, nix, default) = match raw {
+        RawProfile::Basic(b) => (b.host, Kind::Basic, b.nix, (false, true)),
+        RawProfile::OAuth2(o) => (
+            o.host,
+            Kind::OAuth2(validate_oauth(name, o.oauth2)?),
+            o.nix,
+            (true, false),
+        ),
     };
+    let host = parse_host(name, &host)?;
 
-    let (access_token, netrc) = match table.get("nix") {
+    let (access_token, netrc) = match nix {
         None => (None, false),
-        Some(value) => parse_nix(name, value, is_oauth)?,
+        Some(nix) => {
+            let (token, netrc) = match &nix.r#use {
+                None => default,
+                Some(list) => {
+                    let token = list.contains(&Mechanism::AccessToken);
+                    let netrc = list.contains(&Mechanism::Netrc);
+                    let repeats = list.len() != usize::from(token) + usize::from(netrc);
+                    if list.is_empty() || repeats {
+                        return Err(use_error(name));
+                    }
+                    (token, netrc)
+                }
+            };
+            if nix.access_token_style.is_some() && !token {
+                return Err(config(format!(
+                    "\"access_token_style\" needs \"access-token\" in \"use\" in [{name}.nix]"
+                )));
+            }
+            (token.then_some(nix.access_token_style), netrc)
+        }
     };
 
     Ok(Profile {
@@ -438,161 +571,54 @@ fn parse_profile(name: &str, table: &toml::Table) -> Result<Profile> {
     })
 }
 
-fn parse_oauth(name: &str, table: &toml::Table) -> Result<OAuth> {
-    for key in table.keys() {
-        let key = key.as_str();
-        if SECRET_KEYS.contains(&key) {
-            return Err(secret_error(name, key));
-        }
-        if !OAUTH_KEYS.contains(&key) {
-            return Err(unknown_key(name, key));
-        }
-    }
-    let client_id = required_string(name, table, "client_id")?;
-    let flow = match required_string(name, table, "flow")?.as_str() {
-        "device" => Flow::Device,
-        "authorization_code" => Flow::AuthorizationCode,
-        _ => {
-            return Err(Error::config(format!(
-                "profile \"{name}\": \"flow\" must be \"device\" or \"authorization_code\""
-            )))
-        }
+fn validate_oauth(name: &str, o: RawOAuth) -> Result<OAuth> {
+    let config = |text: String| Error::config(format!("profile \"{name}\": {text}"));
+    nonempty(name, "client_id", &o.client_id)?;
+    nonempty(name, "token_endpoint", &o.token_endpoint)?;
+    check_endpoint(name, "token_endpoint", &o.token_endpoint)?;
+    // Each flow needs its own endpoint and rejects the other's
+    let (own, other, own_key, other_key, other_flow) = match o.flow {
+        Flow::Device => (
+            &o.device_authorization_endpoint,
+            &o.authorization_endpoint,
+            "device_authorization_endpoint",
+            "authorization_endpoint",
+            "authorization_code",
+        ),
+        Flow::AuthorizationCode => (
+            &o.authorization_endpoint,
+            &o.device_authorization_endpoint,
+            "authorization_endpoint",
+            "device_authorization_endpoint",
+            "device",
+        ),
     };
-    let token_endpoint = required_string(name, table, "token_endpoint")?;
-    check_endpoint(name, "token_endpoint", &token_endpoint)?;
-
-    let device_authorization_endpoint = string_value(name, table, "device_authorization_endpoint")?;
-    let authorization_endpoint = string_value(name, table, "authorization_endpoint")?;
-    match flow {
-        Flow::Device => {
-            if authorization_endpoint.is_some() {
-                return Err(Error::config(format!(
-                    "profile \"{name}\": \"authorization_endpoint\" is only valid for flow \
-                     \"authorization_code\""
-                )));
-            }
-            let endpoint = device_authorization_endpoint
-                .as_deref()
-                .ok_or_else(|| missing(name, "device_authorization_endpoint"))?;
-            check_endpoint(name, "device_authorization_endpoint", endpoint)?;
-        }
-        Flow::AuthorizationCode => {
-            if device_authorization_endpoint.is_some() {
-                return Err(Error::config(format!(
-                    "profile \"{name}\": \"device_authorization_endpoint\" is only valid for \
-                     flow \"device\""
-                )));
-            }
-            let endpoint = authorization_endpoint
-                .as_deref()
-                .ok_or_else(|| missing(name, "authorization_endpoint"))?;
-            check_endpoint(name, "authorization_endpoint", endpoint)?;
-        }
+    if other.is_some() {
+        return Err(config(format!(
+            "\"{other_key}\" is only valid for flow \"{other_flow}\""
+        )));
     }
-
-    let scopes = match table.get("scopes") {
-        None => Vec::new(),
-        Some(toml::Value::Array(items)) => {
-            let mut scopes = Vec::new();
-            for item in items {
-                match item {
-                    toml::Value::String(s)
-                        if !s.is_empty() && !s.chars().any(char::is_whitespace) =>
-                    {
-                        scopes.push(s.clone())
-                    }
-                    _ => {
-                        return Err(Error::config(format!(
-                            "profile \"{name}\": \"scopes\" items must be non-empty strings \
-                             without whitespace"
-                        )))
-                    }
-                }
-            }
-            scopes
-        }
-        Some(_) => {
-            return Err(Error::config(format!(
-                "profile \"{name}\": \"scopes\" must be an array of strings"
-            )))
-        }
-    };
-
+    let endpoint = own
+        .as_deref()
+        .ok_or_else(|| config(format!("missing required key \"{own_key}\"")))?;
+    nonempty(name, own_key, endpoint)?;
+    check_endpoint(name, own_key, endpoint)?;
+    if o.scopes
+        .iter()
+        .any(|s| s.is_empty() || s.chars().any(char::is_whitespace))
+    {
+        return Err(config(
+            "\"scopes\" items must be non-empty strings without whitespace".into(),
+        ));
+    }
     Ok(OAuth {
-        client_id,
-        flow,
-        device_authorization_endpoint,
-        authorization_endpoint,
-        token_endpoint,
-        scopes,
+        client_id: o.client_id,
+        flow: o.flow,
+        device_authorization_endpoint: o.device_authorization_endpoint,
+        authorization_endpoint: o.authorization_endpoint,
+        token_endpoint: o.token_endpoint,
+        scopes: o.scopes,
     })
-}
-
-/// Parses `[<name>.nix]`: how the credential reaches Nix. `use` lists the mechanisms (default:
-/// access token for oauth2 profiles, netrc for basic ones) and `access_token_style` renders the
-/// access token. Returns the access-token choice (with its optional style) and the netrc choice.
-fn parse_nix(
-    name: &str,
-    value: &toml::Value,
-    is_oauth: bool,
-) -> Result<(Option<Option<Style>>, bool)> {
-    let Some(table) = value.as_table() else {
-        return Err(Error::config(format!(
-            "profile \"{name}\": \"nix\" must be a table"
-        )));
-    };
-    let mut uses: Option<(bool, bool)> = None;
-    let mut style = None;
-    for (key, value) in table {
-        match key.as_str() {
-            "use" => {
-                let Some(items) = value.as_array().filter(|a| !a.is_empty()) else {
-                    return Err(use_error(name));
-                };
-                let (mut token, mut netrc) = (false, false);
-                for item in items {
-                    let seen = match item.as_str() {
-                        Some("access-token") => &mut token,
-                        Some("netrc") => &mut netrc,
-                        _ => return Err(use_error(name)),
-                    };
-                    if std::mem::replace(seen, true) {
-                        return Err(use_error(name));
-                    }
-                }
-                uses = Some((token, netrc));
-            }
-            "access-token-style" => return Err(renamed_style_key(name)),
-            "access_token_style" => {
-                style = Some(match value.as_str() {
-                    Some("plain") => Style::Plain,
-                    Some("typed") => Style::Typed,
-                    Some(old @ ("github" | "gitlab")) => {
-                        let new = if old == "github" { "plain" } else { "typed" };
-                        return Err(Error::config(format!(
-                            "profile \"{name}\": style \"{old}\" was renamed to \"{new}\" in \
-                             [{name}.nix]"
-                        )));
-                    }
-                    _ => return Err(style_error(name)),
-                })
-            }
-            k if SECRET_KEYS.contains(&k) => return Err(secret_error(name, k)),
-            k => return Err(unknown_key(name, k)),
-        }
-    }
-    let (token, netrc) = uses.unwrap_or(if is_oauth {
-        (true, false)
-    } else {
-        (false, true)
-    });
-    if style.is_some() && !token {
-        return Err(Error::config(format!(
-            "profile \"{name}\": \"access_token_style\" needs \"access-token\" in \"use\" in \
-             [{name}.nix]"
-        )));
-    }
-    Ok((token.then_some(style), netrc))
 }
 
 /// Returns the configuration file path: `explicit`, else `$XDG_CONFIG_HOME/nix-vault/config.toml`,
@@ -871,6 +897,28 @@ access_token_style = "typed"
         let wrong_endpoint =
             GOOD.replace("device_authorization_endpoint", "authorization_endpoint");
         assert!(error(&wrong_endpoint).contains("only valid for flow"));
+    }
+
+    #[test]
+    fn a_wrong_type_names_the_key_and_never_quotes_the_value() {
+        let basic = |body: &str| format!("[a]\ntype=\"basic\"\nhost=\"h.example\"\n{body}\n");
+        assert_eq!(
+            error(&basic("nix = 3")),
+            "profile \"a\": \"nix\" must be a table"
+        );
+        assert_eq!(
+            error("[a]\ntype=\"basic\"\nhost=5\n"),
+            "profile \"a\": \"host\" must be a string"
+        );
+        let oauth = GOOD.replace("scopes = [\"read_api\"]", "scopes = \"SECRET-VALUE\"");
+        let message = error(&oauth);
+        assert_eq!(
+            message,
+            "profile \"company\": \"scopes\" must be an array of strings"
+        );
+        assert!(!message.contains("SECRET-VALUE"));
+        let items = GOOD.replace("[\"read_api\"]", "[\"read_api\", 7]");
+        assert!(error(&items).contains("\"scopes\" items must be non-empty strings"));
     }
 
     #[test]

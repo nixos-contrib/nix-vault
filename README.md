@@ -86,7 +86,7 @@ groups, inheritance or reusable sources.
 | `[<profile>.nix]` | Meaning |
 |-------------------|---------|
 | absent | oauth2 profiles use a Nix **access token**; basic profiles use **netrc** |
-| `use = [...]` | the mechanisms, a non-empty list of `"access-token"`, `"netrc"` and/or `"proxy"`. `"access-token"` presents the credential as an `access-tokens` entry (a basic profile used this way must hold a personal access token as its password). `"netrc"` presents it through netrc: basic profiles use the username given at login, oauth2 profiles use `oauth2`. `"proxy"` (basic profiles only, and not combined with the others) sends the credential through a local reverse proxy, see [Services behind Cloudflare Access](#services-behind-cloudflare-access). |
+| `use = [...]` | the mechanisms, a non-empty list of `"access-token"`, `"netrc"` and/or `"proxy"`. `"access-token"` presents the credential as an `access-tokens` entry (a basic profile used this way must hold a personal access token as its password). `"netrc"` presents it through netrc: basic profiles use the username given at login, oauth2 profiles use `oauth2`. `"proxy"` (not combined with the others) sends the credential through a local reverse proxy, see [Services behind Cloudflare Access](#services-behind-cloudflare-access). |
 | `access_token_prefix` | only with `"access-token"`: `none` (`host=<token>`: github.com, Gitea, Forgejo) or `by_type` (`host=OAuth2:<token>`, or `host=PAT:<token>` for basic profiles: GitLab). Default: `none` for the host `github.com`, otherwise `by_type`. |
 
 List both mechanisms to present one profile both ways. Keys use `snake_case`; values are spelled as the external system spells them (`authorization_code` as in OAuth, `access-token` and `netrc` as in Nix). Access tokens are used by Nix's own forge
@@ -115,18 +115,45 @@ sets `substituters`: the entries for that host now point at the proxy (path and 
 host is added when you do not list it. Your other substituters are kept.
 
 * **The headers.** `headers` is required with `use = ["proxy"]`. Names are spelled as HTTP spells
-  them; values are text in which `{username}` and `{password}` stand for the stored credential
-  (so nothing secret is written in the file) and at least one header must use one. `Authorization`,
-  `Cookie`, `Host` and the headers that frame a message cannot be set. A header the client sends
-  with the same name is replaced.
+  them; values are text in which the placeholders stand for the stored credential, so nothing
+  secret is written in the file: `{username}` and `{password}` for basic profiles, `{access_token}`
+  for oauth2 profiles. At least one header must use one. The headers that frame a message (`Host`,
+  `Content-Length`, ...) cannot be set. A header the client sends with the same name is replaced,
+  so `Authorization = "Bearer {access_token}"` works even though Nix itself can only send Basic.
 * **The address.** The local URL has a random path prefix, and anything outside it gets a 404, so
   another user on the machine cannot borrow the credentials. It is passed to the command in
   `NIX_VAULT_PROXY_<PROFILE>` (the profile name in capitals), for a command that names the service
   itself: `nix-vault exec -p cache -- nix copy --to "$NIX_VAULT_PROXY_CACHE" ./result`.
 * **Permission.** Nix only honors a `substituters` setting from a session if you are allowed to use
   it: a trusted user (`trusted-users`), or the address permitted by `trusted-substituters`.
-* **Not a login.** The credential is a service token, not a user login; the proxy does not refresh
-  anything, and `Authorization` headers from the client are passed on untouched.
+* **Two ways to get the credential.** A basic profile holds a service token. An oauth2 profile logs
+  in through the provider (for Cloudflare, an Access SaaS OIDC application: authorization code with
+  PKCE, `redirect_port` set to a registered redirect URL) and the proxy sends the access token as
+  configured:
+
+  ```toml
+  [cache]
+  host = "nix.example.com"
+  type = "oauth2"
+
+  [cache.oauth2]
+  client_id = "<the application's client ID>"
+  flow = "authorization_code"
+  authorization_endpoint = "https://<team>.cloudflareaccess.com/cdn-cgi/access/sso/oidc/<client ID>/authorization"
+  token_endpoint = "https://<team>.cloudflareaccess.com/cdn-cgi/access/sso/oidc/<client ID>/token"
+  scopes = ["openid", "email"]
+  redirect_port = 8251
+
+  [cache.nix]
+  use = ["proxy"]
+
+  [cache.proxy]
+  headers = { Authorization = "Bearer {access_token}" }
+  ```
+* **Limit.** The headers are filled in once, when `exec` starts: the proxy does not refresh an
+  access token during the run, so a token that expires mid-command (Cloudflare Access's last about
+  five minutes) fails the requests after that. Headers the client sends that the proxy does not
+  replace are passed on untouched.
 
 ## Commands
 

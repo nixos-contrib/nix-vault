@@ -362,6 +362,7 @@ struct RawOAuth2Profile {
     host: String,
     oauth2: RawOAuth,
     nix: Option<RawNix>,
+    proxy: Option<RawProxy>,
     #[serde(rename = "type")]
     _type: String,
 }
@@ -472,9 +473,6 @@ fn shape_error(name: &str, path: &str, message: &str, table: &toml::Table) -> Er
         if key == "oauth2" {
             return config("\"oauth2\" is only valid for oauth2 profiles".into());
         }
-        if key == "proxy" {
-            return config("[proxy] is only valid for basic profiles".into());
-        }
         return unknown_key(name, &key);
     }
     match path {
@@ -563,13 +561,18 @@ fn validate(name: &str, raw: RawProfile) -> Result<Profile> {
     let config = |text: String| Error::config(format!("profile \"{name}\": {text}"));
     // The type decides the default delivery: (access token, netrc)
     let is_basic = matches!(raw, RawProfile::Basic(_));
+    let placeholders: &[&str] = if is_basic {
+        &["{username}", "{password}"]
+    } else {
+        &["{access_token}"]
+    };
     let (host, kind, nix, proxy_table, default) = match raw {
         RawProfile::Basic(b) => (b.host, Kind::Basic, b.nix, b.proxy, (false, true)),
         RawProfile::OAuth2(o) => (
             o.host,
             Kind::OAuth2(validate_oauth(name, o.oauth2)?),
             o.nix,
-            None,
+            o.proxy,
             (true, false),
         ),
     };
@@ -599,11 +602,6 @@ fn validate(name: &str, raw: RawProfile) -> Result<Profile> {
                      [{name}.nix]: the credentials go to the proxy, not to the host"
                 )));
             }
-            if proxy && !is_basic {
-                return Err(config(
-                    "\"proxy\" is only available for basic profiles".into(),
-                ));
-            }
             if nix.access_token_prefix.is_some() && !token {
                 return Err(config(format!(
                     "\"access_token_prefix\" needs \"access-token\" in \"use\" in [{name}.nix]"
@@ -614,7 +612,7 @@ fn validate(name: &str, raw: RawProfile) -> Result<Profile> {
     };
 
     let proxy_headers = match (proxy, proxy_table) {
-        (true, Some(table)) => validate_headers(name, &table.headers)?,
+        (true, Some(table)) => validate_headers(name, &table.headers, placeholders)?,
         (true, None) => {
             return Err(config(format!(
                 "\"proxy\" in \"use\" needs a [{name}.proxy] table with \"headers\""
@@ -639,13 +637,10 @@ fn validate(name: &str, raw: RawProfile) -> Result<Profile> {
     })
 }
 
-/// Headers a proxy must not set: the ones Nix sends from its own settings, and the ones that
-/// frame a message.
-const RESERVED_HEADERS: [&str; 14] = [
-    "authorization",
+/// Headers a proxy must not set: the ones that frame a message, and the one Nix uses for its own
+/// HTTP proxy. (`Authorization` and `Cookie` may be set: the proxy's value replaces the client's.)
+const RESERVED_HEADERS: [&str; 11] = [
     "proxy-authorization",
-    "cookie",
-    "set-cookie",
     "host",
     "content-length",
     "transfer-encoding",
@@ -659,10 +654,12 @@ const RESERVED_HEADERS: [&str; 14] = [
 ];
 
 /// Checks the header table of `[<name>.proxy]`: valid names, none reserved, values made of text
-/// and the two placeholders, at least one of which is used. Values are never quoted in errors.
+/// and the profile type's placeholders (`allowed`), at least one of which is used. Values are
+/// never quoted in errors.
 fn validate_headers(
     name: &str,
     headers: &BTreeMap<String, String>,
+    allowed: &[&str],
 ) -> Result<Vec<(String, String)>> {
     let config = |text: String| Error::config(format!("profile \"{name}\": {text}"));
     if headers.is_empty() {
@@ -690,9 +687,7 @@ fn validate_headers(
         let mut rest = template.as_str();
         while let Some(at) = rest.find(['{', '}']) {
             let tail = &rest[at..];
-            let placeholder = ["{username}", "{password}"]
-                .into_iter()
-                .find(|p| tail.starts_with(p));
+            let placeholder = allowed.iter().find(|p| tail.starts_with(**p));
             match placeholder {
                 Some(p) => {
                     uses_credential = true;
@@ -700,19 +695,19 @@ fn validate_headers(
                 }
                 None => {
                     return Err(config(format!(
-                        "the value of header \"{header}\" has a stray brace or an unknown \
-                         placeholder; use {{username}} or {{password}}"
+                        "the value of header \"{header}\" has a stray brace or a placeholder \
+                         this profile type does not have; use {}",
+                        allowed.join(" or ")
                     )))
                 }
             }
         }
     }
     if !uses_credential {
-        return Err(config(
-            "no header in [proxy] uses {username} or {password}, so the stored credential \
-             would never be sent"
-                .into(),
-        ));
+        return Err(config(format!(
+            "no header in [proxy] uses {}, so the stored credential would never be sent",
+            allowed.join(" or ")
+        )));
     }
     Ok(headers
         .iter()
@@ -1178,13 +1173,29 @@ access_token_prefix = "by_type"
         }
         assert!(error(&proxied("use = [\"proxy\", \"proxy\"]", PROXY_TABLE))
             .contains("\"use\" must be a non-empty list"));
-        let oauth = "[a]\nhost=\"h.example\"\ntype=\"oauth2\"\n[a.oauth2]\nclient_id=\"c\"\nflow=\"device\"\n\
-             device_authorization_endpoint=\"https://h.example/d\"\ntoken_endpoint=\"https://h.example/t\"\n\
-             [a.nix]\nuse = [\"proxy\"]\n";
-        assert!(error(oauth).contains("\"proxy\" is only available for basic profiles"));
-        let table_on_oauth = oauth.replace("use = [\"proxy\"]", "use = [\"access-token\"]")
-            + "[a.proxy]\nheaders = { X = \"{password}\" }\n";
-        assert!(error(&table_on_oauth).contains("[proxy] is only valid for basic profiles"));
+        // oauth2 profiles use {access_token}, and basic placeholders are not available to them
+        let oauth = |headers: &str| {
+            format!(
+                "[a]\nhost=\"h.example\"\ntype=\"oauth2\"\n[a.oauth2]\nclient_id=\"c\"\nflow=\"device\"\n\
+                 device_authorization_endpoint=\"https://h.example/d\"\ntoken_endpoint=\"https://h.example/t\"\n\
+                 [a.nix]\nuse = [\"proxy\"]\n[a.proxy]\nheaders = {{ {headers} }}\n"
+            )
+        };
+        let config = Config::parse(&oauth("Authorization = \"Bearer {access_token}\"")).unwrap();
+        assert!(config.profiles[0].proxy);
+        assert_eq!(
+            config.profiles[0].proxy_headers,
+            [(
+                "Authorization".to_string(),
+                "Bearer {access_token}".to_string()
+            )]
+        );
+        assert!(error(&oauth("X = \"{password}\"")).contains("this profile type does not have"));
+        assert!(error(&proxied(
+            "use = [\"proxy\"]",
+            "[a.proxy]\nheaders = { X = \"{access_token}\" }\n"
+        ))
+        .contains("this profile type does not have"));
         // Not chosen: nothing changes
         let plain = Config::parse(BASIC_ONLY).unwrap();
         assert!(!plain.profiles[0].proxy && plain.profiles[0].proxy_headers.is_empty());
@@ -1215,7 +1226,7 @@ access_token_prefix = "by_type"
         let check = |header: &str| error(&proxied("use = [\"proxy\"]", &table(header)));
         // Names
         assert!(check("\"Bad Name\" = \"{password}\"").contains("not a valid header name"));
-        for reserved in ["Authorization", "cookie", "Host", "Content-Length"] {
+        for reserved in ["Proxy-Authorization", "Host", "Content-Length"] {
             assert!(
                 check(&format!("{reserved} = \"{{password}}\""))
                     .contains("cannot be set by a proxy"),
@@ -1224,9 +1235,20 @@ access_token_prefix = "by_type"
         }
         // Values
         assert!(check("X = \"\"").contains("must be non-empty text"));
-        assert!(check("X = \"{token}\"").contains("unknown placeholder"));
-        assert!(check("X = \"a}b{password}\"").contains("unknown placeholder"));
+        assert!(check("X = \"{token}\"").contains("this profile type does not have"));
+        assert!(check("X = \"a}b{password}\"").contains("stray brace"));
         assert!(check("X = \"static\"").contains("would never be sent"));
+        // Authorization and Cookie may be set: the proxy's value replaces the client's
+        for settable in ["Authorization", "Cookie"] {
+            assert!(
+                Config::parse(&proxied(
+                    "use = [\"proxy\"]",
+                    &table(&format!("{settable} = \"{{password}}\""))
+                ))
+                .is_ok(),
+                "{settable}"
+            );
+        }
         // Literal text around placeholders is fine
         let ok = Config::parse(&proxied(
             "use = [\"proxy\"]",

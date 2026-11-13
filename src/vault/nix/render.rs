@@ -59,20 +59,29 @@ pub fn access_token_entry(profile: &Profile, credential: &Credential) -> Result<
     Ok((profile.host.clone(), Secret::new(rendered)))
 }
 
-/// Returns the headers the proxy adds for a basic profile: each template of `[<name>.proxy]`
-/// with `{username}` and `{password}` replaced by the stored credential.
+/// Returns the headers the proxy adds: each template of `[<name>.proxy]` with the placeholders
+/// replaced by the stored credential: `{username}` and `{password}` for basic profiles,
+/// `{access_token}` for oauth2 profiles.
 pub fn proxy_headers(profile: &Profile, credential: &Credential) -> Result<Vec<(String, Secret)>> {
-    let (Kind::Basic, Some(basic)) = (&profile.kind, &credential.basic) else {
-        return Err(mismatch(profile));
+    let values: Vec<(&str, &str)> = match (&profile.kind, &credential.basic, &credential.oauth2) {
+        (Kind::Basic, Some(basic), None) => vec![
+            ("{username}", basic.username.expose()),
+            ("{password}", basic.password.expose()),
+        ],
+        (Kind::OAuth2(_), None, Some(oauth)) => {
+            vec![("{access_token}", oauth.access_token.expose())]
+        }
+        _ => return Err(mismatch(profile)),
     };
-    let (username, password) = (basic.username.expose(), basic.password.expose());
     profile
         .proxy_headers
         .iter()
         .map(|(name, template)| {
-            let value = template
-                .replace("{username}", username)
-                .replace("{password}", password);
+            let value = values
+                .iter()
+                .fold(template.clone(), |text, (placeholder, value)| {
+                    text.replace(placeholder, value)
+                });
             // A stored value with a line break would split the header
             if value.chars().any(char::is_control) {
                 return Err(Error::Auth(format!(

@@ -162,18 +162,50 @@ fn a_profile_without_proxy_leaves_substituters_alone() {
 }
 
 #[test]
-fn proxy_is_refused_for_oauth2_profiles_and_in_combinations() {
-    let oauth = "[a]\nhost=\"h.example\"\ntype=\"oauth2\"\n[a.oauth2]\nclient_id=\"c\"\nflow=\"device\"\n\
-                 device_authorization_endpoint=\"https://h.example/d\"\ntoken_endpoint=\"https://h.example/t\"\n\
-                 [a.nix]\nuse=[\"proxy\"]\n";
-    let ws = Workspace::new(oauth);
-    ws.cmd()
+fn an_oauth2_profile_is_served_through_the_proxy_with_its_access_token() {
+    let config = "[svc]\nhost = \"proxy.invalid\"\ntype = \"oauth2\"\n[svc.oauth2]\nclient_id = \"public-client-id\"\n\
+                  flow = \"authorization_code\"\nauthorization_endpoint = \"https://idp.example/a\"\n\
+                  token_endpoint = \"https://idp.example/t\"\nredirect_port = 8251\n\
+                  [svc.nix]\nuse = [\"proxy\"]\n[svc.proxy]\nheaders = { Authorization = \"Bearer {access_token}\" }\n";
+    let ws = Workspace::new(config);
+    ws.seed_oauth(
+        "svc",
+        &identity("oauth2", "proxy.invalid", Some("public-client-id")),
+        "FAKE_ACCESS_TOKEN_5c1",
+        None,
+        Some("2999-01-01T00:00:00Z"),
+    );
+    let output = ws
+        .cmd()
+        .args(["exec", "-p", "svc", "--", "sh", "-c", PROBE])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    // The proxy is in place, and the token is in no file and no message
+    assert!(stdout.contains("substituters = http://127.0.0.1:"));
+    assert!(stdout
+        .split("--- with the prefix\n")
+        .nth(1)
+        .unwrap()
+        .starts_with("502"));
+    assert!(!stdout.contains("FAKE_ACCESS_TOKEN_5c1"));
+    assert_no_secrets(&stderr, &["FAKE_ACCESS_TOKEN_5c1"]);
+    assert!(!stdout.contains("netrc-file") && !stdout.contains("access-tokens"));
+}
+
+#[test]
+fn proxy_placeholders_must_fit_the_profile_type_and_mechanisms_do_not_combine() {
+    let wrong = "[a]\nhost=\"h.example\"\ntype=\"basic\"\n[a.nix]\nuse=[\"proxy\"]\n\
+                 [a.proxy]\nheaders = { X = \"{access_token}\" }\n";
+    Workspace::new(wrong)
+        .cmd()
         .arg("list")
         .assert()
         .failure()
-        .stderr(predicate::str::contains(
-            "\"proxy\" is only available for basic profiles",
-        ));
+        .stderr(predicate::str::contains("this profile type does not have"));
     let ws = Workspace::new(
         "[a]\nhost=\"h.example\"\ntype=\"basic\"\n[a.nix]\nuse=[\"proxy\",\"netrc\"]\n\
          [a.proxy]\nheaders = { X = \"{password}\" }\n",

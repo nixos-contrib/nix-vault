@@ -49,6 +49,12 @@ impl LoginCommand {
     pub fn execute(&mut self, args: &LoginCommandArgs) -> Result<()> {
         let profile = self.config.profile(&args.profile)?;
         match &profile.kind {
+            Kind::Basic if profile.env.is_some() => writeln!(
+                self.writer,
+                "Profile {} reads its credentials from the environment each time it is used; \
+                 there is nothing to log in to here.",
+                profile.name
+            )?,
             Kind::Basic => {
                 match auth::login_basic(profile, &self.store, args.force, self.prompt.as_ref())? {
                     LoginOutcome::Stored => writeln!(
@@ -117,6 +123,15 @@ impl LogoutCommand {
             )?;
             return Ok(());
         }
+        if profile.env.is_some() {
+            writeln!(
+                self.writer,
+                "Profile {} stores no credentials: it reads them from the environment. Nothing \
+                 was removed.",
+                profile.name
+            )?;
+            return Ok(());
+        }
         if self.store.remove(&profile.name)? {
             writeln!(
                 self.writer,
@@ -164,6 +179,17 @@ impl ListCommand {
                     profile.host.clone(),
                     profile.type_name().to_string(),
                     "from a command".to_string(),
+                    "-".to_string(),
+                ]);
+                continue;
+            }
+            if profile.env.is_some() {
+                // Nothing is stored, and the variables are not read for a listing
+                rows.push([
+                    profile.name.clone(),
+                    profile.host.clone(),
+                    profile.type_name().to_string(),
+                    "environment".to_string(),
                     "-".to_string(),
                 ]);
                 continue;
@@ -268,6 +294,18 @@ impl ExecCommand {
                     Err(e) => problems.push(e),
                 }
                 continue;
+            }
+            // Credentials from the environment: nothing is stored, so the store is not opened
+            match auth::env::acquire(profile) {
+                Ok(Some(credential)) => {
+                    credentials.push((profile, credential));
+                    continue;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    problems.push(e);
+                    continue;
+                }
             }
             let stored = store.load(&profile.name)?;
             match auth::state(profile, stored.as_ref(), now) {

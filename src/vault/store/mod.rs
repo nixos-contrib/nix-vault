@@ -155,6 +155,36 @@ impl Credential {
     }
 }
 
+/// A store that is opened on first use. A run that selects only profiles with environment
+/// credentials never touches the keychain (or asks for the file store's passphrase), so a CI
+/// runner without a keychain can use it.
+struct LazyStore {
+    inner: std::sync::Mutex<Option<Box<dyn SecretStore>>>,
+}
+
+impl LazyStore {
+    fn with<T>(&self, f: impl FnOnce(&dyn SecretStore) -> Result<T>) -> Result<T> {
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.is_none() {
+            // A failure is reported to the caller and tried again on the next use
+            *guard = Some(open()?);
+        }
+        f(guard.as_deref().expect("opened above"))
+    }
+}
+
+impl SecretStore for LazyStore {
+    fn get(&self, account: &str) -> Result<Option<Secret>> {
+        self.with(|store| store.get(account))
+    }
+    fn set(&self, account: &str, value: &Secret) -> Result<()> {
+        self.with(|store| store.set(account, value))
+    }
+    fn delete(&self, account: &str) -> Result<bool> {
+        self.with(|store| store.delete(account))
+    }
+}
+
 /// Typed access to the credentials of profiles.
 pub struct CredentialStore {
     inner: Box<dyn SecretStore>,
@@ -166,9 +196,11 @@ impl CredentialStore {
         CredentialStore { inner }
     }
 
-    /// Opens the selected store (the keyring, or the encrypted file store).
-    pub fn open() -> Result<Self> {
-        Ok(CredentialStore::new(open()?))
+    /// A store that opens the selected one when it is first used.
+    pub fn open_lazy() -> Self {
+        CredentialStore::new(Box::new(LazyStore {
+            inner: std::sync::Mutex::new(None),
+        }))
     }
 
     /// Returns the credential stored for `profile`, if any.

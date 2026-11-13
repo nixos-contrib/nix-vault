@@ -6,6 +6,7 @@ mod helpers;
 #[path = "integration"]
 mod areas {
     pub mod config;
+    pub mod env_credentials;
     pub mod exec_selection;
     pub mod exec_session;
     pub mod list;

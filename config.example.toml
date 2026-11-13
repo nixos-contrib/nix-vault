@@ -120,3 +120,14 @@ command_output_format = "text"    # default: the trimmed output is the token. A 
 # Delivery is the proxy, implied for this type; the table below is required.
 [team-cache.proxy]
 headers = { cf-access-token = "{access_token}" }
+
+# CI: a basic profile that reads its credentials from environment variables during `exec`, for
+# runners without a keychain. The names are not secrets; the values are never in this file, and
+# nothing is stored. Both variables must be set and non-empty when `exec` starts.
+[gitlab-ci]
+host = "cache.example.com"
+type = "basic"
+
+[gitlab-ci.basic]
+username_env = "NIX_CACHE_USERNAME"
+password_env = "NIX_CACHE_TOKEN"

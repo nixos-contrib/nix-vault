@@ -32,7 +32,7 @@ fn run(program: Program) -> Result<ExitCode> {
         ProgramCommand::Login(args) => {
             // The configuration is validated before the store is opened or anything is asked
             let config = Config::load(&args.parent.config)?;
-            let store = CredentialStore::open()?;
+            let store = CredentialStore::open_lazy();
             let mut command = LoginCommand {
                 writer: Box::new(std::io::stdout()),
                 config,
@@ -43,14 +43,14 @@ fn run(program: Program) -> Result<ExitCode> {
         }
         ProgramCommand::Exec(args) => {
             let config = Config::load(&args.parent.config)?;
-            let store = CredentialStore::open()?;
+            let store = CredentialStore::open_lazy();
             let store = std::sync::Arc::new(std::sync::Mutex::new(store));
             let mut command = ExecCommand { config, store };
             return Ok(exit_code(command.execute(&args)?));
         }
         ProgramCommand::Logout(args) => {
             let config = Config::load(&args.parent.config)?;
-            let store = CredentialStore::open()?;
+            let store = CredentialStore::open_lazy();
             let mut command = LogoutCommand {
                 writer: Box::new(std::io::stdout()),
                 config,
@@ -60,7 +60,7 @@ fn run(program: Program) -> Result<ExitCode> {
         }
         ProgramCommand::List(args) => {
             let config = Config::load(&args.parent.config)?;
-            let store = CredentialStore::open()?;
+            let store = CredentialStore::open_lazy();
             let mut command = ListCommand {
                 writer: Box::new(std::io::stdout()),
                 config,

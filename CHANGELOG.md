@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/nixos-contrib/nix-vault/compare/v0.2.0...v0.3.0) (2026-11-13)
+
+
+### Features
+
+* name the access token prefix choice access_token_prefix ([#8](https://github.com/nixos-contrib/nix-vault/issues/8)) ([df002a7](https://github.com/nixos-contrib/nix-vault/commit/df002a7b9bec33cf91b24b932512f7bc5e77378e))
+
 ## [0.2.0](https://github.com/nixos-contrib/nix-vault/compare/v0.1.0...v0.2.0) (2026-11-13)
 
 

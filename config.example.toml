@@ -92,7 +92,8 @@ client_id = "your-oidc-client-id"
 flow = "authorization_code"
 authorization_endpoint = "https://idp.example.com/authorize"
 token_endpoint = "https://idp.example.com/token"
-scopes = ["openid", "email"]
+scopes = ["openid", "email", "offline_access"]   # offline_access: a refresh token, so the proxy can
+                                                 # renew the access token while a command runs
 redirect_port = 8251              # register http://127.0.0.1:8251/callback at the provider
 
 [oidc-cache.nix]

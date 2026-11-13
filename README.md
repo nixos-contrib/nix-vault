@@ -141,7 +141,7 @@ host is added when you do not list it. Your other substituters are kept.
   flow = "authorization_code"
   authorization_endpoint = "https://<team>.cloudflareaccess.com/cdn-cgi/access/sso/oidc/<client ID>/authorization"
   token_endpoint = "https://<team>.cloudflareaccess.com/cdn-cgi/access/sso/oidc/<client ID>/token"
-  scopes = ["openid", "email"]
+  scopes = ["openid", "email", "offline_access"]   # offline_access: a refresh token, so the proxy can renew the access token
   redirect_port = 8251
 
   [cache.nix]
@@ -150,10 +150,16 @@ host is added when you do not list it. Your other substituters are kept.
   [cache.proxy]
   headers = { Authorization = "Bearer {access_token}" }
   ```
-* **Limit.** The headers are filled in once, when `exec` starts: the proxy does not refresh an
-  access token during the run, so a token that expires mid-command (Cloudflare Access's last about
-  five minutes) fails the requests after that. Headers the client sends that the proxy does not
-  replace are passed on untouched.
+* **Renewal during the run.** The proxy asks for its headers on every request. For an oauth2
+  profile it renews the access token when it is within two minutes of its end, exchanging the
+  refresh token (and saving a rotated one), so a command that runs longer than the token lives
+  keeps working. This needs a refresh token: with Cloudflare Access add `offline_access` to `scopes`
+  (the dashboard does not list it, but the API accepts it when the application has a refresh token
+  lifetime). Concurrent requests share one renewal. When the token cannot be renewed (the refresh
+  token expired or was revoked, or there never was one) the proxy does not forward the request: it
+  answers `401` with a message that names the profile and says to run `nix-vault login`. A
+  service token (basic profile) does not expire during a run, so its headers never change. Headers
+  the client sends that the proxy does not replace are passed on untouched.
 
 ### Credentials from a command
 

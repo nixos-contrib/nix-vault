@@ -44,6 +44,7 @@ fn run(program: Program) -> Result<ExitCode> {
         ProgramCommand::Exec(args) => {
             let config = Config::load(&args.parent.config)?;
             let store = CredentialStore::open()?;
+            let store = std::sync::Arc::new(std::sync::Mutex::new(store));
             let mut command = ExecCommand { config, store };
             return Ok(exit_code(command.execute(&args)?));
         }

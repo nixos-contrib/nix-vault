@@ -5,6 +5,7 @@ pub mod netrc;
 pub mod proxy;
 pub mod render;
 pub mod session;
+pub mod source;
 
 use std::{collections::BTreeMap, path::PathBuf, process::Command};
 

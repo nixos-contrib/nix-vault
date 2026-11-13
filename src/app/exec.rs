@@ -7,7 +7,7 @@ use std::{
     process::{Command, ExitStatus},
     sync::{
         atomic::{AtomicI32, Ordering},
-        Arc,
+        Arc, Mutex, MutexGuard,
     },
 };
 
@@ -26,7 +26,7 @@ use crate::{
     vault::{
         auth::{self, basic::Prompt, CredentialState, LoginOutcome},
         config::{Config, Kind, Profile},
-        nix::{self, netrc, proxy, render, session},
+        nix::{self, netrc, proxy, render, session, source::OAuthSource},
         store::{Credential, CredentialStore},
         Error, Result,
     },
@@ -221,8 +221,15 @@ impl ListCommand {
 pub struct ExecCommand {
     /// The validated configuration.
     pub config: Config,
-    /// Where credentials are kept.
-    pub store: CredentialStore,
+    /// Where credentials are kept. Shared, because the proxy renews tokens from its own threads
+    /// while the command runs.
+    pub store: Arc<Mutex<CredentialStore>>,
+}
+
+fn locked(store: &Arc<Mutex<CredentialStore>>) -> MutexGuard<'_, CredentialStore> {
+    store
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 impl ExecCommand {
@@ -248,6 +255,7 @@ impl ExecCommand {
         }
 
         // Credentials: only the selected profiles are read
+        let store = locked(&self.store);
         let now = OffsetDateTime::now_utc();
         let mut credentials: Vec<(&Profile, Credential)> = Vec::new();
         let mut problems: Vec<Error> = Vec::new();
@@ -261,11 +269,11 @@ impl ExecCommand {
                 }
                 continue;
             }
-            let stored = self.store.load(&profile.name)?;
+            let stored = store.load(&profile.name)?;
             match auth::state(profile, stored.as_ref(), now) {
                 CredentialState::Usable => credentials.push((profile, stored.expect("usable"))),
                 CredentialState::Expiring => {
-                    match auth::refresh_profile(profile, &self.store, &args.parent.state_dir) {
+                    match auth::refresh_profile(profile, &store, &args.parent.state_dir) {
                         Ok(credential) => credentials.push((profile, credential)),
                         Err(e) => problems.push(e),
                     }
@@ -291,8 +299,11 @@ impl ExecCommand {
             return Err(last);
         }
 
+        // The proxy's threads take the store from here on
+        drop(store);
+
         // Plan: what to present to Nix, rejecting conflicts before anything is launched
-        let (mut plan, specs) = build_plan(&credentials)?;
+        let (mut plan, specs) = build_plan(&credentials, &self.store, &args.parent.state_dir)?;
 
         // The user's own Nix settings, which must be preserved
         let nix_config = nix::effective_config()?;
@@ -311,7 +322,7 @@ impl ExecCommand {
             for spec in specs {
                 let started = proxy::Proxy::start(proxy::Target {
                     base: format!("https://{}", spec.host),
-                    headers: spec.headers,
+                    source: spec.source,
                 })?;
                 list = nix::point_at_proxy(&list, &spec.host, started.url());
                 for name in &spec.profiles {
@@ -349,7 +360,7 @@ impl ExecCommand {
 struct ProxySpec {
     host: String,
     profiles: Vec<String>,
-    headers: Vec<(String, crate::vault::auth::redact::Secret)>,
+    source: Arc<dyn proxy::HeaderSource>,
 }
 
 /// The variable that carries a proxied profile's local address to the command, so a command that
@@ -368,7 +379,11 @@ fn proxy_env_name(profile: &str) -> String {
     format!("NIX_VAULT_PROXY_{name}")
 }
 
-fn build_plan(credentials: &[(&Profile, Credential)]) -> Result<(session::Plan, Vec<ProxySpec>)> {
+fn build_plan(
+    credentials: &[(&Profile, Credential)],
+    store: &Arc<Mutex<CredentialStore>>,
+    state_dir: &Path,
+) -> Result<(session::Plan, Vec<ProxySpec>)> {
     let mut proxied: BTreeMap<String, ProxySpec> = BTreeMap::new();
     let mut fingerprints: BTreeMap<&str, (&str, String)> = BTreeMap::new();
     let mut tokens: BTreeMap<String, (String, crate::vault::auth::redact::Secret)> =
@@ -392,14 +407,25 @@ fn build_plan(credentials: &[(&Profile, Credential)]) -> Result<(session::Plan, 
         }
         let delivery = profile.delivery();
         if delivery.proxy {
+            // Rendered once now, so a template that cannot be filled fails before launch
             let headers = render::proxy_headers(profile, credential)?;
+            let source: Arc<dyn proxy::HeaderSource> = match &profile.kind {
+                // An oauth2 token is renewed as it nears its end, whenever the proxy is asked
+                Kind::OAuth2(_) => Arc::new(OAuthSource::new(
+                    (*profile).clone(),
+                    store.clone(),
+                    state_dir.to_path_buf(),
+                    credential.clone(),
+                )),
+                _ => Arc::new(proxy::StaticHeaders(headers)),
+            };
             proxied
                 .entry(profile.host.clone())
                 .and_modify(|spec| spec.profiles.push(profile.name.clone()))
                 .or_insert_with(|| ProxySpec {
                     host: profile.host.clone(),
                     profiles: vec![profile.name.clone()],
-                    headers,
+                    source,
                 });
         }
         if delivery.access_token.is_some() {

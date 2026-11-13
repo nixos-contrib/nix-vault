@@ -1,0 +1,6 @@
+nix-vault follows the repository conventions (toolchain, CI and release setup, keyring layering)
+of keysafe (https://github.com/keysafe-dev/keysafe, MIT) and the exec workflow ideas of aws-vault
+(https://github.com/99designs/aws-vault and https://github.com/ByteNess/aws-vault, MIT). No source
+code was copied from keysafe, aws-vault or nix-auth (https://github.com/numtide/nix-auth, MIT).
+If code from any of them is adapted later, name the source in the file header and add the original
+copyright and license text here.

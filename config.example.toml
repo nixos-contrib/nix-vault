@@ -1,0 +1,51 @@
+# nix-vault configuration: ~/.config/nix-vault/config.toml
+#
+# Each top-level table is a profile with one host and one authentication type, `basic` or
+# `oauth2`. The file never holds usernames, passwords or tokens: `nix-vault login` asks for them
+# and keeps them in the system keychain. Endpoint values below are illustrative; they must
+# match the real service.
+
+# A private binary cache that needs a login. Basic profiles are presented to Nix through netrc
+# unless you say otherwise.
+[cache]
+host = "cache.example.com"
+type = "basic"
+
+# A self-hosted GitLab used by flake inputs. OAuth profiles are presented to Nix as an access
+# token (`OAuth2:<token>`) unless you add sub-tables.
+[company]
+host = "gitlab.example.com"
+type = "oauth2"
+client_id = "public-client-id"            # a public client: there is no client secret
+flow = "device"                           # or "authorization_code" (with PKCE)
+device_authorization_endpoint = "https://gitlab.example.com/oauth/authorize_device"
+token_endpoint = "https://gitlab.example.com/oauth/token"
+scopes = ["read_api"]
+
+# github.com with the authorization code flow. The access token is the bare token for this host.
+[github]
+host = "github.com"
+type = "oauth2"
+client_id = "your-github-oauth-app-client-id"
+flow = "authorization_code"
+authorization_endpoint = "https://github.com/login/oauth/authorize"
+token_endpoint = "https://github.com/login/oauth/access_token"
+scopes = ["repo"]
+
+# One profile presented through both mechanisms: as an access token (for Nix's forge fetchers)
+# and through netrc (for HTTP downloads and caches on the same host).
+[mono]
+host = "git.example.com"
+type = "oauth2"
+client_id = "another-public-client-id"
+flow = "device"
+device_authorization_endpoint = "https://git.example.com/oauth/authorize_device"
+token_endpoint = "https://git.example.com/oauth/token"
+
+[mono.access-token]
+style = "gitlab"       # "github" renders host=<token>; "gitlab" renders host=OAuth2:<token>
+                       # (host=PAT:<token> for basic profiles). Default: github for github.com,
+                       # gitlab for every other host.
+
+[mono.netrc]
+username = "oauth2"    # netrc login for OAuth profiles (default "oauth2")

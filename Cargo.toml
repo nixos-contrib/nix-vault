@@ -1,0 +1,48 @@
+[package]
+name = "nix-vault"
+version = "0.1.0"
+edition = "2021"
+description = "Authenticate Nix against private services: store credentials in the system keychain and run commands with them available to Nix"
+license = "MIT"
+documentation = "https://github.com/nixos-contrib/nix-vault"
+homepage = "https://github.com/nixos-contrib/nix-vault"
+repository = "https://github.com/nixos-contrib/nix-vault"
+
+# `cargo binstall nix-vault` downloads the binary attached to the GitHub release
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }"
+pkg-fmt = "bin"
+
+[features]
+# File-backed credential store used only by automated tests (fake credentials). Release builds
+# must never enable it: it is the only way credentials can be kept outside the system keychain.
+file-store = []
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env", "string"] }
+fd-lock = "4"
+libc = "0.2"
+# oauth2 5 pins reqwest 0.12; use its re-export so only one reqwest version is built
+oauth2 = { version = "5", default-features = false, features = ["reqwest-blocking", "rustls-tls"] }
+keyring-core = "1"
+rpassword = "7"
+secrecy = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+signal-hook = "0.4"
+tempfile = "3"
+time = { version = "0.3", features = ["formatting", "parsing", "serde-well-known", "macros"] }
+toml = { version = "1", features = ["preserve_order"] }
+webbrowser = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1", features = ["keychain"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust"] }
+
+[dev-dependencies]
+assert_cmd = "2"
+expectrl = "0.7"
+predicates = "3"

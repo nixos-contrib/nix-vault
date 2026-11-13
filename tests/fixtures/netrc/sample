@@ -1,0 +1,9 @@
+# Logins for the team (fake values only)
+machine keep.example.com login keepuser password KEEP_SECRET_1
+  # the cache entry below is replaced by nix-vault for the selected profile
+machine cache.example.com login olduser password OLD_SECRET_2
+machine "quoted.example.com" login "user name" password "pass word"
+macdef init
+machine inside-macro.example.com login macrouser password MACRO_SECRET
+
+default login anonymous password anon@example.com

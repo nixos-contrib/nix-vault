@@ -112,7 +112,12 @@ arguments or the environment.
   untrusted users or on NixOS. Fetches inside **sandboxed builds** and **remote builders** are not
   covered.
 * **No renewal while the command runs.** OAuth tokens are refreshed only before launch (when
-  expiry is known). A long command may outlive its token.
+  expiry is known). A long command, such as a big `nix copy` or build, may outlive its token and
+  then fail with the service's own authorization error; nix-vault does not rerun it. Run it again
+  (the next `exec` refreshes first), or use a longer-lived token: a `basic` profile can hold a
+  personal access token. Nix reads `access-tokens` once at startup, so those cannot be renewed in
+  a running process. It re-reads the netrc file on every request (observed for client-side
+  fetches), so renewal during a run would be possible for netrc delivery; nix-vault does not do it.
 * **Cleanup is best effort.** The session is removed after normal exit, startup failure and
   handled signals (SIGINT, SIGTERM, SIGHUP). After SIGKILL, a crash or power loss the 0700
   directory with 0600 files can remain; nix-vault does not delete directories from earlier runs.

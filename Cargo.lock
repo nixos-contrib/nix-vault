@@ -1890,7 +1890,7 @@ dependencies = [
 
 [[package]]
 name = "nix-vault"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "age",
  "apple-native-keyring-store",

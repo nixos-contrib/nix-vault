@@ -65,3 +65,18 @@ access_token_prefix = "by_type"   # "none" renders host=<token> (github.com, Git
                                   # basic profiles), which is what GitLab expects. Default: none
                                   # for github.com, by_type for every other host. Only valid when
                                   # "use" includes "access-token".
+
+# A service behind Cloudflare Access, reached with a service token. Log in with the token's
+# client ID as the username and its secret as the password. nix-vault runs a local proxy for
+# the command that adds the headers below, and points Nix's substituters at it.
+[access-cache]
+host = "nix.example.com"
+type = "basic"
+
+[access-cache.nix]
+use = ["proxy"]                   # only for basic profiles; not combined with other mechanisms
+
+[access-cache.proxy]
+# The headers added to every request, as HTTP spells them. {username} and {password} stand for the
+# stored credential, so no secret is written here. Authorization, Cookie and Host cannot be set.
+headers = { CF-Access-Client-Id = "{username}", CF-Access-Client-Secret = "{password}" }

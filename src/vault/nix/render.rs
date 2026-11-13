@@ -59,6 +59,33 @@ pub fn access_token_entry(profile: &Profile, credential: &Credential) -> Result<
     Ok((profile.host.clone(), Secret::new(rendered)))
 }
 
+/// Returns the headers the proxy adds for a basic profile: each template of `[<name>.proxy]`
+/// with `{username}` and `{password}` replaced by the stored credential.
+pub fn proxy_headers(profile: &Profile, credential: &Credential) -> Result<Vec<(String, Secret)>> {
+    let (Kind::Basic, Some(basic)) = (&profile.kind, &credential.basic) else {
+        return Err(mismatch(profile));
+    };
+    let (username, password) = (basic.username.expose(), basic.password.expose());
+    profile
+        .proxy_headers
+        .iter()
+        .map(|(name, template)| {
+            let value = template
+                .replace("{username}", username)
+                .replace("{password}", password);
+            // A stored value with a line break would split the header
+            if value.chars().any(char::is_control) {
+                return Err(Error::Auth(format!(
+                    "the credential of profile \"{}\" contains a control character and cannot \
+                     be sent in the header \"{name}\"",
+                    profile.name
+                )));
+            }
+            Ok((name.clone(), Secret::new(value)))
+        })
+        .collect()
+}
+
 /// Returns a string that identifies the account behind a credential, used to tell whether two
 /// profiles on the same host would present different credentials.
 pub fn account_fingerprint(credential: &Credential) -> String {
@@ -181,5 +208,38 @@ mod tests {
         let b = &c.profiles[0];
         let cred = Credential::basic(b.identity(), Secret::new("u"), Secret::new("a b"));
         assert!(access_token_entry(b, &cred).is_err());
+    }
+
+    #[test]
+    fn proxy_headers_fill_the_templates_from_the_stored_credential() {
+        let c = Config::parse(
+            "[b]\nhost=\"h.example\"\ntype=\"basic\"\n[b.nix]\nuse=[\"proxy\"]\n[b.proxy]\n\
+             headers = { X-Id = \"{username}\", X-Auth = \"Bearer {password}\", X-Static = \"on\" }\n",
+        )
+        .unwrap();
+        let b = &c.profiles[0];
+        let headers = proxy_headers(b, &basic_cred(b)).unwrap();
+        let shown: Vec<(&str, &str)> = headers
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.expose()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("X-Auth", "Bearer pat-1"),
+                ("X-Id", "alice"),
+                ("X-Static", "on")
+            ]
+        );
+        // A line break in the stored value would split the header
+        let cred = Credential::basic(
+            b.identity(),
+            Secret::new("alice"),
+            Secret::new("p\r\nX-Evil: 1"),
+        );
+        assert!(proxy_headers(b, &cred).is_err());
+        // The wrong kind of credential is refused
+        let o = &config("", "", "h.example").profiles[1];
+        assert!(proxy_headers(b, &oauth_cred(o)).is_err());
     }
 }

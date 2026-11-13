@@ -86,11 +86,47 @@ groups, inheritance or reusable sources.
 | `[<profile>.nix]` | Meaning |
 |-------------------|---------|
 | absent | oauth2 profiles use a Nix **access token**; basic profiles use **netrc** |
-| `use = [...]` | the mechanisms, a non-empty list of `"access-token"` and/or `"netrc"`. `"access-token"` presents the credential as an `access-tokens` entry (a basic profile used this way must hold a personal access token as its password). `"netrc"` presents it through netrc: basic profiles use the username given at login, oauth2 profiles use `oauth2`. |
+| `use = [...]` | the mechanisms, a non-empty list of `"access-token"`, `"netrc"` and/or `"proxy"`. `"access-token"` presents the credential as an `access-tokens` entry (a basic profile used this way must hold a personal access token as its password). `"netrc"` presents it through netrc: basic profiles use the username given at login, oauth2 profiles use `oauth2`. `"proxy"` (basic profiles only, and not combined with the others) sends the credential through a local reverse proxy, see [Services behind Cloudflare Access](#services-behind-cloudflare-access). |
 | `access_token_prefix` | only with `"access-token"`: `none` (`host=<token>`: github.com, Gitea, Forgejo) or `by_type` (`host=OAuth2:<token>`, or `host=PAT:<token>` for basic profiles: GitLab). Default: `none` for the host `github.com`, otherwise `by_type`. |
 
 List both mechanisms to present one profile both ways. Keys use `snake_case`; values are spelled as the external system spells them (`authorization_code` as in OAuth, `access-token` and `netrc` as in Nix). Access tokens are used by Nix's own forge
 fetchers (flake inputs and `nix flake update`); netrc covers HTTP downloads and binary caches.
+
+### Services behind Cloudflare Access
+
+Nix can only send an `Authorization` header from netrc: it cannot send the headers Cloudflare
+Access wants for a service token. `use = ["proxy"]` covers that:
+
+```toml
+[cache]
+host = "nix.example.com"
+type = "basic"        # login stores the service token: client ID as username, secret as password
+
+[cache.nix]
+use = ["proxy"]
+
+[cache.proxy]
+headers = { CF-Access-Client-Id = "{username}", CF-Access-Client-Secret = "{password}" }
+```
+
+`exec` starts a small reverse proxy on `127.0.0.1` for the length of the command. It forwards each
+request over HTTPS to the profile's host, adds the headers of `[<profile>.proxy]`, and streams the bodies, so a large upload or download is never held in memory. The session `nix.conf`
+sets `substituters`: the entries for that host now point at the proxy (path and query kept), and the
+host is added when you do not list it. Your other substituters are kept.
+
+* **The headers.** `headers` is required with `use = ["proxy"]`. Names are spelled as HTTP spells
+  them; values are text in which `{username}` and `{password}` stand for the stored credential
+  (so nothing secret is written in the file) and at least one header must use one. `Authorization`,
+  `Cookie`, `Host` and the headers that frame a message cannot be set. A header the client sends
+  with the same name is replaced.
+* **The address.** The local URL has a random path prefix, and anything outside it gets a 404, so
+  another user on the machine cannot borrow the credentials. It is passed to the command in
+  `NIX_VAULT_PROXY_<PROFILE>` (the profile name in capitals), for a command that names the service
+  itself: `nix-vault exec -p cache -- nix copy --to "$NIX_VAULT_PROXY_CACHE" ./result`.
+* **Permission.** Nix only honors a `substituters` setting from a session if you are allowed to use
+  it: a trusted user (`trusted-users`), or the address permitted by `trusted-substituters`.
+* **Not a login.** The credential is a service token, not a user login; the proxy does not refresh
+  anything, and `Authorization` headers from the client are passed on untouched.
 
 ## Commands
 
@@ -127,8 +163,9 @@ signal `n`).
 `NIX_CONFIG` with one `!include` line. Your existing netrc entries and `access-tokens` are carried
 over (the selected profile wins for a host both define, and a note names the host). If your
 `netrc-file` exists but cannot be read, the command still runs without its entries and a warning
-names the file. The session directory is removed when the command ends. Secrets are never put in
-arguments or the environment.
+names the file. The session directory is removed when the command ends. Credentials are never put in
+arguments or the environment; with `proxy` the environment holds the local proxy's address, not the
+credential.
 
 ## Limitations
 

@@ -4,7 +4,7 @@
 //! error names the profile and the key concerned.
 
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     path::{Path, PathBuf},
 };
 
@@ -107,6 +107,11 @@ pub struct Profile {
     pub access_token: Option<Option<Prefix>>,
     /// Netrc delivery was chosen in `[<name>.nix]`.
     pub netrc: bool,
+    /// Proxy delivery was chosen in `[<name>.nix]`: a local reverse proxy adds the credentials.
+    pub proxy: bool,
+    /// The headers the proxy adds, from `[<name>.proxy]`: name and value template, where
+    /// `{username}` and `{password}` stand for the stored credential. Empty without `proxy`.
+    pub proxy_headers: Vec<(String, String)>,
 }
 
 /// The mechanisms through which a profile's credentials are presented to Nix.
@@ -116,6 +121,8 @@ pub struct Delivery {
     pub access_token: Option<Prefix>,
     /// Present through netrc.
     pub netrc: bool,
+    /// Present through a local reverse proxy that Nix is pointed at.
+    pub proxy: bool,
 }
 
 impl Profile {
@@ -139,21 +146,31 @@ impl Profile {
 
     /// Returns the mechanisms used for this profile (see FR-026).
     pub fn delivery(&self) -> Delivery {
+        if self.proxy {
+            return Delivery {
+                access_token: None,
+                netrc: false,
+                proxy: true,
+            };
+        }
         if self.access_token.is_none() && !self.netrc {
             return match self.kind {
                 Kind::OAuth2(_) => Delivery {
                     access_token: Some(self.prefix()),
                     netrc: false,
+                    proxy: false,
                 },
                 Kind::Basic => Delivery {
                     access_token: None,
                     netrc: true,
+                    proxy: false,
                 },
             };
         }
         Delivery {
             access_token: self.access_token.map(|_| self.prefix()),
             netrc: self.netrc,
+            proxy: false,
         }
     }
 
@@ -292,7 +309,7 @@ fn renamed_prefix_key(profile: &str, old: &str) -> Error {
 fn use_error(profile: &str) -> Error {
     Error::config(format!(
         "profile \"{profile}\": \"use\" must be a non-empty list without repeats of \
-         \"access-token\" and \"netrc\" in [{profile}.nix]"
+         \"access-token\", \"netrc\" and \"proxy\" in [{profile}.nix]"
     ))
 }
 
@@ -332,6 +349,7 @@ fn check_endpoint(profile: &str, key: &str, value: &str) -> Result<()> {
 struct RawBasic {
     host: String,
     nix: Option<RawNix>,
+    proxy: Option<RawProxy>,
     // `type` was read to pick this struct
     #[serde(rename = "type")]
     _type: String,
@@ -351,6 +369,12 @@ struct RawOAuth2Profile {
 enum RawProfile {
     Basic(RawBasic),
     OAuth2(RawOAuth2Profile),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawProxy {
+    headers: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -379,6 +403,8 @@ enum Mechanism {
     AccessToken,
     #[serde(rename = "netrc")]
     Netrc,
+    #[serde(rename = "proxy")]
+    Proxy,
 }
 
 /// Rejects, with the messages the contract promises, the keys that must never be in the file and
@@ -411,7 +437,7 @@ fn precheck(name: &str, table: &toml::Table) -> Result<()> {
             _ => {}
         }
     }
-    for section in ["oauth2", "nix"] {
+    for section in ["oauth2", "nix", "proxy"] {
         let Some(toml::Value::Table(inner)) = table.get(section) else {
             continue;
         };
@@ -445,6 +471,9 @@ fn shape_error(name: &str, path: &str, message: &str, table: &toml::Table) -> Er
     if let Some(key) = quoted("unknown field `") {
         if key == "oauth2" {
             return config("\"oauth2\" is only valid for oauth2 profiles".into());
+        }
+        if key == "proxy" {
+            return config("[proxy] is only valid for basic profiles".into());
         }
         return unknown_key(name, &key);
     }
@@ -533,39 +562,70 @@ fn nonempty(name: &str, key: &str, value: &str) -> Result<()> {
 fn validate(name: &str, raw: RawProfile) -> Result<Profile> {
     let config = |text: String| Error::config(format!("profile \"{name}\": {text}"));
     // The type decides the default delivery: (access token, netrc)
-    let (host, kind, nix, default) = match raw {
-        RawProfile::Basic(b) => (b.host, Kind::Basic, b.nix, (false, true)),
+    let is_basic = matches!(raw, RawProfile::Basic(_));
+    let (host, kind, nix, proxy_table, default) = match raw {
+        RawProfile::Basic(b) => (b.host, Kind::Basic, b.nix, b.proxy, (false, true)),
         RawProfile::OAuth2(o) => (
             o.host,
             Kind::OAuth2(validate_oauth(name, o.oauth2)?),
             o.nix,
+            None,
             (true, false),
         ),
     };
     let host = parse_host(name, &host)?;
 
-    let (access_token, netrc) = match nix {
-        None => (None, false),
+    let (access_token, netrc, proxy) = match nix {
+        None => (None, false, false),
         Some(nix) => {
+            let mut proxy = false;
             let (token, netrc) = match &nix.r#use {
                 None => default,
                 Some(list) => {
                     let token = list.contains(&Mechanism::AccessToken);
                     let netrc = list.contains(&Mechanism::Netrc);
-                    let repeats = list.len() != usize::from(token) + usize::from(netrc);
+                    proxy = list.contains(&Mechanism::Proxy);
+                    let repeats =
+                        list.len() != usize::from(token) + usize::from(netrc) + usize::from(proxy);
                     if list.is_empty() || repeats {
                         return Err(use_error(name));
                     }
                     (token, netrc)
                 }
             };
+            if proxy && (token || netrc) {
+                return Err(config(format!(
+                    "\"proxy\" cannot be combined with other mechanisms in \"use\" in \
+                     [{name}.nix]: the credentials go to the proxy, not to the host"
+                )));
+            }
+            if proxy && !is_basic {
+                return Err(config(
+                    "\"proxy\" is only available for basic profiles".into(),
+                ));
+            }
             if nix.access_token_prefix.is_some() && !token {
                 return Err(config(format!(
                     "\"access_token_prefix\" needs \"access-token\" in \"use\" in [{name}.nix]"
                 )));
             }
-            (token.then_some(nix.access_token_prefix), netrc)
+            (token.then_some(nix.access_token_prefix), netrc, proxy)
         }
+    };
+
+    let proxy_headers = match (proxy, proxy_table) {
+        (true, Some(table)) => validate_headers(name, &table.headers)?,
+        (true, None) => {
+            return Err(config(format!(
+                "\"proxy\" in \"use\" needs a [{name}.proxy] table with \"headers\""
+            )))
+        }
+        (false, Some(_)) => {
+            return Err(config(format!(
+                "[{name}.proxy] needs \"proxy\" in \"use\" in [{name}.nix]"
+            )))
+        }
+        (false, None) => Vec::new(),
     };
 
     Ok(Profile {
@@ -574,7 +634,90 @@ fn validate(name: &str, raw: RawProfile) -> Result<Profile> {
         kind,
         access_token,
         netrc,
+        proxy,
+        proxy_headers,
     })
+}
+
+/// Headers a proxy must not set: the ones Nix sends from its own settings, and the ones that
+/// frame a message.
+const RESERVED_HEADERS: [&str; 14] = [
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
+    "host",
+    "content-length",
+    "transfer-encoding",
+    "connection",
+    "keep-alive",
+    "te",
+    "trailer",
+    "upgrade",
+    "proxy-connection",
+    "expect",
+];
+
+/// Checks the header table of `[<name>.proxy]`: valid names, none reserved, values made of text
+/// and the two placeholders, at least one of which is used. Values are never quoted in errors.
+fn validate_headers(
+    name: &str,
+    headers: &BTreeMap<String, String>,
+) -> Result<Vec<(String, String)>> {
+    let config = |text: String| Error::config(format!("profile \"{name}\": {text}"));
+    if headers.is_empty() {
+        return Err(config("\"headers\" must not be empty".into()));
+    }
+    let mut uses_credential = false;
+    for (header, template) in headers {
+        let valid_name = !header.is_empty()
+            && header
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "!#$%&'*+-.^_`|~".contains(c));
+        if !valid_name {
+            return Err(config(format!("\"{header}\" is not a valid header name")));
+        }
+        if RESERVED_HEADERS.contains(&header.to_ascii_lowercase().as_str()) {
+            return Err(config(format!(
+                "the header \"{header}\" cannot be set by a proxy"
+            )));
+        }
+        if template.is_empty() || template.chars().any(char::is_control) {
+            return Err(config(format!(
+                "the value of header \"{header}\" must be non-empty text without control characters"
+            )));
+        }
+        let mut rest = template.as_str();
+        while let Some(at) = rest.find(['{', '}']) {
+            let tail = &rest[at..];
+            let placeholder = ["{username}", "{password}"]
+                .into_iter()
+                .find(|p| tail.starts_with(p));
+            match placeholder {
+                Some(p) => {
+                    uses_credential = true;
+                    rest = &tail[p.len()..];
+                }
+                None => {
+                    return Err(config(format!(
+                        "the value of header \"{header}\" has a stray brace or an unknown \
+                         placeholder; use {{username}} or {{password}}"
+                    )))
+                }
+            }
+        }
+    }
+    if !uses_credential {
+        return Err(config(
+            "no header in [proxy] uses {username} or {password}, so the stored credential \
+             would never be sent"
+                .into(),
+        ));
+    }
+    Ok(headers
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect())
 }
 
 fn validate_oauth(name: &str, o: RawOAuth) -> Result<OAuth> {
@@ -733,7 +876,8 @@ access_token_prefix = "by_type"
             cache,
             Delivery {
                 access_token: None,
-                netrc: true
+                netrc: true,
+                proxy: false
             }
         );
         let oauth = Config::parse(
@@ -746,7 +890,8 @@ access_token_prefix = "by_type"
             oauth.profiles[0].delivery(),
             Delivery {
                 access_token: Some(Prefix::Bare),
-                netrc: false
+                netrc: false,
+                proxy: false
             }
         );
         let both = config.profile("company").unwrap().delivery();
@@ -754,7 +899,8 @@ access_token_prefix = "by_type"
             both,
             Delivery {
                 access_token: Some(Prefix::ByType),
-                netrc: true
+                netrc: true,
+                proxy: false
             }
         );
     }
@@ -990,4 +1136,107 @@ access_token_prefix = "by_type"
         assert!(error(&device)
             .contains("\"redirect_port\" is only valid for flow \"authorization_code\""));
     }
+
+    const PROXY_TABLE: &str =
+        "[a.proxy]\nheaders = { CF-Access-Client-Id = \"{username}\", CF-Access-Client-Secret = \"{password}\" }\n";
+
+    fn proxied(nix: &str, table: &str) -> String {
+        format!("[a]\nhost=\"h.example\"\ntype=\"basic\"\n[a.nix]\n{nix}\n{table}")
+    }
+
+    #[test]
+    fn proxy_is_an_exclusive_mechanism_of_basic_profiles() {
+        let config = Config::parse(&proxied("use = [\"proxy\"]", PROXY_TABLE)).unwrap();
+        let profile = &config.profiles[0];
+        assert!(profile.proxy);
+        assert_eq!(
+            profile.delivery(),
+            Delivery {
+                access_token: None,
+                netrc: false,
+                proxy: true
+            }
+        );
+        assert_eq!(
+            profile.proxy_headers,
+            [
+                ("CF-Access-Client-Id".to_string(), "{username}".to_string()),
+                (
+                    "CF-Access-Client-Secret".to_string(),
+                    "{password}".to_string()
+                )
+            ]
+        );
+        for combined in [
+            "use = [\"proxy\", \"netrc\"]",
+            "use = [\"access-token\", \"proxy\"]",
+        ] {
+            assert!(
+                error(&proxied(combined, PROXY_TABLE)).contains("\"proxy\" cannot be combined"),
+                "{combined}"
+            );
+        }
+        assert!(error(&proxied("use = [\"proxy\", \"proxy\"]", PROXY_TABLE))
+            .contains("\"use\" must be a non-empty list"));
+        let oauth = "[a]\nhost=\"h.example\"\ntype=\"oauth2\"\n[a.oauth2]\nclient_id=\"c\"\nflow=\"device\"\n\
+             device_authorization_endpoint=\"https://h.example/d\"\ntoken_endpoint=\"https://h.example/t\"\n\
+             [a.nix]\nuse = [\"proxy\"]\n";
+        assert!(error(oauth).contains("\"proxy\" is only available for basic profiles"));
+        let table_on_oauth = oauth.replace("use = [\"proxy\"]", "use = [\"access-token\"]")
+            + "[a.proxy]\nheaders = { X = \"{password}\" }\n";
+        assert!(error(&table_on_oauth).contains("[proxy] is only valid for basic profiles"));
+        // Not chosen: nothing changes
+        let plain = Config::parse(BASIC_ONLY).unwrap();
+        assert!(!plain.profiles[0].proxy && plain.profiles[0].proxy_headers.is_empty());
+    }
+
+    #[test]
+    fn the_proxy_table_and_use_go_together() {
+        assert!(error(&proxied("use = [\"proxy\"]", ""))
+            .contains("\"proxy\" in \"use\" needs a [a.proxy] table with \"headers\""));
+        assert!(error(&proxied("use = [\"netrc\"]", PROXY_TABLE))
+            .contains("[a.proxy] needs \"proxy\" in \"use\" in [a.nix]"));
+        assert!(error(&proxied("use = [\"proxy\"]", "[a.proxy]\n"))
+            .contains("missing required key \"headers\""));
+        assert!(
+            error(&proxied("use = [\"proxy\"]", "[a.proxy]\nheaders = {}\n"))
+                .contains("\"headers\" must not be empty")
+        );
+        assert!(error(&proxied(
+            "use = [\"proxy\"]",
+            "[a.proxy]\nheaders = { X = \"{password}\" }\nextra = 1\n"
+        ))
+        .contains("unknown key"));
+    }
+
+    #[test]
+    fn header_names_and_templates_are_checked_without_quoting_values() {
+        let table = |header: &str| format!("[a.proxy]\nheaders = {{ {header} }}\n");
+        let check = |header: &str| error(&proxied("use = [\"proxy\"]", &table(header)));
+        // Names
+        assert!(check("\"Bad Name\" = \"{password}\"").contains("not a valid header name"));
+        for reserved in ["Authorization", "cookie", "Host", "Content-Length"] {
+            assert!(
+                check(&format!("{reserved} = \"{{password}}\""))
+                    .contains("cannot be set by a proxy"),
+                "{reserved}"
+            );
+        }
+        // Values
+        assert!(check("X = \"\"").contains("must be non-empty text"));
+        assert!(check("X = \"{token}\"").contains("unknown placeholder"));
+        assert!(check("X = \"a}b{password}\"").contains("unknown placeholder"));
+        assert!(check("X = \"static\"").contains("would never be sent"));
+        // Literal text around placeholders is fine
+        let ok = Config::parse(&proxied(
+            "use = [\"proxy\"]",
+            &table("X-Auth = \"Bearer {password}\", X-User = \"{username}\""),
+        ));
+        assert!(ok.is_ok());
+        // A wrong-typed value never shows what it was
+        let message = check("X = 5");
+        assert!(message.contains("\"X\" must be") && !message.contains('5'));
+    }
+
+    const BASIC_ONLY: &str = "[a]\nhost=\"h.example\"\ntype=\"basic\"\n";
 }

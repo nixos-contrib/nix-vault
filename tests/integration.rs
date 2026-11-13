@@ -16,6 +16,7 @@ mod areas {
     pub mod nix_gated;
     pub mod process;
     pub mod profile_changes;
+    pub mod proxy;
     pub mod redaction;
     pub mod refresh;
     pub mod repo_and_cache;

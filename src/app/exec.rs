@@ -26,7 +26,7 @@ use crate::{
     vault::{
         auth::{self, basic::Prompt, CredentialState, LoginOutcome},
         config::{Config, Kind, Profile},
-        nix::{self, netrc, render, session},
+        nix::{self, netrc, proxy, render, session},
         store::{Credential, CredentialStore},
         Error, Result,
     },
@@ -256,7 +256,7 @@ impl ExecCommand {
         }
 
         // Plan: what to present to Nix, rejecting conflicts before anything is launched
-        let plan = build_plan(&credentials)?;
+        let (mut plan, specs) = build_plan(&credentials)?;
 
         // The user's own Nix settings, which must be preserved
         let nix_config = nix::effective_config()?;
@@ -266,6 +266,31 @@ impl ExecCommand {
             read_existing_netrc(&nix_config.netrc_file)
         };
         announce_replacements(&credentials, &nix_config.access_tokens, &existing_netrc);
+
+        // Proxied hosts: one local proxy each, and Nix is pointed at it instead of the host
+        let mut proxies: Vec<proxy::Proxy> = Vec::new();
+        let mut env: Vec<(String, String)> = Vec::new();
+        if !specs.is_empty() {
+            let mut list = nix_config.substituters.clone();
+            for spec in specs {
+                let started = proxy::Proxy::start(proxy::Target {
+                    base: format!("https://{}", spec.host),
+                    headers: spec.headers,
+                })?;
+                list = nix::point_at_proxy(&list, &spec.host, started.url());
+                for name in &spec.profiles {
+                    env.push((proxy_env_name(name), started.url().to_string()));
+                }
+                note(format!(
+                    "{} is served through a local proxy that adds its credentials; Nix uses it \
+                     for substitution (the address is in ${})",
+                    spec.host,
+                    proxy_env_name(&spec.profiles[0])
+                ));
+                proxies.push(started);
+            }
+            plan.substituters = Some(list);
+        }
 
         let (session, conf_path) =
             session::build(&session::base_dir(), &plan, &nix_config, &existing_netrc)?;
@@ -280,11 +305,35 @@ impl ExecCommand {
             }
             _ => include,
         };
-        run_child(&args.command, &nix_config_value, session)
+        run_child(&args.command, &nix_config_value, session, &env, proxies)
     }
 }
 
-fn build_plan(credentials: &[(&Profile, Credential)]) -> Result<session::Plan> {
+/// What the proxy for one host needs: the profiles that use it and the headers it adds.
+struct ProxySpec {
+    host: String,
+    profiles: Vec<String>,
+    headers: Vec<(String, crate::vault::auth::redact::Secret)>,
+}
+
+/// The variable that carries a proxied profile's local address to the command, so a command that
+/// names the service itself (`nix copy --to "$NIX_VAULT_PROXY_CACHE"`) can use it.
+fn proxy_env_name(profile: &str) -> String {
+    let name: String = profile
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("NIX_VAULT_PROXY_{name}")
+}
+
+fn build_plan(credentials: &[(&Profile, Credential)]) -> Result<(session::Plan, Vec<ProxySpec>)> {
+    let mut proxied: BTreeMap<String, ProxySpec> = BTreeMap::new();
     let mut fingerprints: BTreeMap<&str, (&str, String)> = BTreeMap::new();
     let mut tokens: BTreeMap<String, (String, crate::vault::auth::redact::Secret)> =
         BTreeMap::new();
@@ -306,6 +355,17 @@ fn build_plan(credentials: &[(&Profile, Credential)]) -> Result<session::Plan> {
             }
         }
         let delivery = profile.delivery();
+        if delivery.proxy {
+            let headers = render::proxy_headers(profile, credential)?;
+            proxied
+                .entry(profile.host.clone())
+                .and_modify(|spec| spec.profiles.push(profile.name.clone()))
+                .or_insert_with(|| ProxySpec {
+                    host: profile.host.clone(),
+                    profiles: vec![profile.name.clone()],
+                    headers,
+                });
+        }
         if delivery.access_token.is_some() {
             let (host, value) = render::access_token_entry(profile, credential)?;
             match tokens.get(&host) {
@@ -334,10 +394,12 @@ fn build_plan(credentials: &[(&Profile, Credential)]) -> Result<session::Plan> {
             }
         }
     }
-    Ok(session::Plan {
+    let plan = session::Plan {
         access_tokens: tokens.into_iter().map(|(h, (_, v))| (h, v)).collect(),
         netrc: netrc_entries.into_values().map(|(_, e)| e).collect(),
-    })
+        substituters: None,
+    };
+    Ok((plan, proxied.into_values().collect()))
 }
 
 fn conflict(first: &str, second: &str, host: &str) -> Error {
@@ -397,6 +459,8 @@ fn run_child(
     command: &[String],
     nix_config: &str,
     mut session: session::Session,
+    env: &[(String, String)],
+    proxies: Vec<proxy::Proxy>,
 ) -> Result<ExitStatus> {
     // The terminal sends Ctrl-C and Ctrl-\ to the child too; nix-vault just keeps waiting.
     // Handlers (unlike "ignore") are reset in the child on exec.
@@ -427,12 +491,14 @@ fn run_child(
     let spawned = Command::new(&command[0])
         .args(&command[1..])
         .env("NIX_CONFIG", nix_config)
+        .envs(env.iter().map(|(k, v)| (k, v)))
         .spawn();
     let mut child = match spawned {
         Ok(child) => child,
         Err(e) => {
             handle.close();
             let _ = forwarder.join();
+            drop(proxies);
             session.cleanup();
             return Err(Error::Spawn {
                 command: command[0].clone(),
@@ -453,6 +519,7 @@ fn run_child(
         low_level::unregister(id);
     }
     // Clean up first, whatever happened to the child
+    drop(proxies);
     session.cleanup();
 
     status.map_err(|e| Error::io("cannot wait for the command", e))

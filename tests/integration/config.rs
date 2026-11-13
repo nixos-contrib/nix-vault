@@ -72,12 +72,12 @@ fn rejects_bad_hosts_endpoints_and_style() {
         "\"token_endpoint\" must use https",
     );
     fails_with(
-        &format!("{BASIC}[a.nix]\nuse = [\"access-token\"]\naccess_token_style = \"bitbucket\"\n"),
-        "\"access_token_style\" must be \"plain\" or \"typed\" in [a.nix]",
+        &format!("{BASIC}[a.nix]\nuse = [\"access-token\"]\naccess_token_prefix = \"bitbucket\"\n"),
+        "\"access_token_prefix\" must be \"none\" or \"by_type\" in [a.nix]",
     );
     fails_with(
-        &format!("{BASIC}access_token_style = \"plain\"\n"),
-        "\"access_token_style\" belongs in [a.nix]",
+        &format!("{BASIC}access_token_prefix = \"none\"\n"),
+        "\"access_token_prefix\" belongs in [a.nix]",
     );
     fails_with(
         &format!("{BASIC}[a.nix]\nuse = []\n"),

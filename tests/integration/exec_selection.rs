@@ -78,7 +78,7 @@ fn profiles_on_different_hosts_are_both_delivered() {
         .stdout
         .clone();
     let text = String::from_utf8(out).unwrap();
-    // oauth2 defaults to an access token (typed style), basic to netrc
+    // oauth2 defaults to an access token (by_type prefix), basic to netrc
     assert!(text.contains("access-tokens = gitlab.example.com=OAuth2:FAKE_TOKEN_91bc"));
     assert!(text.contains(&format!(
         "machine cache.example.com login {FAKE_USER} password {FAKE_PASSWORD}"

@@ -7,7 +7,7 @@ fn one_exec_serves_a_forge_token_and_a_cache_login() {
     let config = "[forge]\nhost = \"gitlab.example.com\"\ntype = \"oauth2\"\n[forge.oauth2]\nclient_id = \"c\"\n\
                   flow = \"device\"\ndevice_authorization_endpoint = \"https://gitlab.example.com/d\"\n\
                   token_endpoint = \"https://gitlab.example.com/t\"\n[forge.nix]\n\
-                  use = [\"access-token\"]\naccess_token_style = \"typed\"\n\
+                  use = [\"access-token\"]\naccess_token_prefix = \"by_type\"\n\
                   [cache]\nhost = \"cache.example.com\"\ntype = \"basic\"\n";
     let ws = Workspace::new(config);
     ws.seed_oauth(

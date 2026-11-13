@@ -33,15 +33,16 @@ const OAUTH_KEYS: [&str; 6] = [
     "scopes",
 ];
 
-/// How an access token is rendered for Nix.
+/// The prefix put in front of an access token for Nix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-pub enum Style {
-    /// `<host>=<token>`
-    #[serde(rename = "plain")]
-    Plain,
-    /// `<host>=OAuth2:<token>` (oauth2) or `<host>=PAT:<token>` (basic)
-    #[serde(rename = "typed")]
-    Typed,
+pub enum Prefix {
+    /// `<host>=<token>`: no prefix.
+    #[serde(rename = "none")]
+    Bare,
+    /// `<host>=OAuth2:<token>` (oauth2) or `<host>=PAT:<token>` (basic): the prefix depends on the
+    /// profile type.
+    #[serde(rename = "by_type")]
+    ByType,
 }
 
 /// The OAuth flow used to log in.
@@ -99,8 +100,8 @@ pub struct Profile {
     pub host: String,
     /// Authentication type and its settings.
     pub kind: Kind,
-    /// Access-token delivery was chosen in `[<name>.nix]`: the optional `access_token_style`.
-    pub access_token: Option<Option<Style>>,
+    /// Access-token delivery was chosen in `[<name>.nix]`: the optional `access_token_prefix`.
+    pub access_token: Option<Option<Prefix>>,
     /// Netrc delivery was chosen in `[<name>.nix]`.
     pub netrc: bool,
 }
@@ -109,7 +110,7 @@ pub struct Profile {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Delivery {
     /// Present as a Nix access token with this style.
-    pub access_token: Option<Style>,
+    pub access_token: Option<Prefix>,
     /// Present through netrc.
     pub netrc: bool,
 }
@@ -123,13 +124,13 @@ impl Profile {
         }
     }
 
-    /// Returns the effective access-token style: the configured one, else `plain` for the host
-    /// `github.com` and `typed` for every other host.
-    pub fn style(&self) -> Style {
+    /// Returns the effective access-token prefix: the configured one, else `none` for the host
+    /// `github.com` and `by_type` for every other host.
+    pub fn prefix(&self) -> Prefix {
         match self.access_token {
             Some(Some(style)) => style,
-            _ if self.host == "github.com" => Style::Plain,
-            _ => Style::Typed,
+            _ if self.host == "github.com" => Prefix::Bare,
+            _ => Prefix::ByType,
         }
     }
 
@@ -138,7 +139,7 @@ impl Profile {
         if self.access_token.is_none() && !self.netrc {
             return match self.kind {
                 Kind::OAuth2(_) => Delivery {
-                    access_token: Some(self.style()),
+                    access_token: Some(self.prefix()),
                     netrc: false,
                 },
                 Kind::Basic => Delivery {
@@ -148,7 +149,7 @@ impl Profile {
             };
         }
         Delivery {
-            access_token: self.access_token.map(|_| self.style()),
+            access_token: self.access_token.map(|_| self.prefix()),
             netrc: self.netrc,
         }
     }
@@ -268,17 +269,20 @@ fn unknown_key(profile: &str, key: &str) -> Error {
     Error::config(format!("profile \"{profile}\": unknown key \"{key}\""))
 }
 
-fn style_error(profile: &str) -> Error {
+fn prefix_error(profile: &str) -> Error {
     Error::config(format!(
-        "profile \"{profile}\": \"access_token_style\" must be \"plain\" or \"typed\" in \
+        "profile \"{profile}\": \"access_token_prefix\" must be \"none\" or \"by_type\" in \
          [{profile}.nix]"
     ))
 }
 
-fn renamed_style_key(profile: &str) -> Error {
+/// The earlier spellings of the access token prefix key, which name their replacement.
+const OLD_PREFIX_KEYS: [&str; 3] = ["style", "access-token-style", "access_token_style"];
+
+fn renamed_prefix_key(profile: &str, old: &str) -> Error {
     Error::config(format!(
-        "profile \"{profile}\": \"access-token-style\" was renamed to \"access_token_style\" \
-         in [{profile}.nix] (keys use snake_case)"
+        "profile \"{profile}\": \"{old}\" was renamed to \"access_token_prefix\" in \
+         [{profile}.nix]"
     ))
 }
 
@@ -362,7 +366,7 @@ struct RawOAuth {
 #[serde(deny_unknown_fields)]
 struct RawNix {
     r#use: Option<Vec<Mechanism>>,
-    access_token_style: Option<Style>,
+    access_token_prefix: Option<Prefix>,
 }
 
 #[derive(Deserialize, Clone, Copy, PartialEq)]
@@ -385,7 +389,7 @@ fn precheck(name: &str, table: &toml::Table) -> Result<()> {
             "access-token" => {
                 return Err(moved(format!(
                     "[{name}.access-token] was replaced by [{name}.nix] (use = \
-                     [\"access-token\"], access_token_style = \"plain\" or \"typed\")"
+                     [\"access-token\"], access_token_prefix = \"none\" or \"by_type\")"
                 )))
             }
             "netrc" => {
@@ -393,13 +397,8 @@ fn precheck(name: &str, table: &toml::Table) -> Result<()> {
                     "[{name}.netrc] was replaced by [{name}.nix] (use = [\"netrc\"])"
                 )))
             }
-            "style" => {
-                return Err(moved(format!(
-                    "\"style\" was renamed to \"access_token_style\" in [{name}.nix]"
-                )))
-            }
-            "access-token-style" => return Err(renamed_style_key(name)),
-            "use" | "access_token_style" => {
+            k if OLD_PREFIX_KEYS.contains(&k) => return Err(renamed_prefix_key(name, k)),
+            "use" | "access_token_prefix" => {
                 return Err(moved(format!("\"{key}\" belongs in [{name}.nix]")))
             }
             k if OAUTH_KEYS.contains(&k) => {
@@ -416,8 +415,8 @@ fn precheck(name: &str, table: &toml::Table) -> Result<()> {
             if SECRET_KEYS.contains(&key) {
                 return Err(secret_error(name, key));
             }
-            if section == "nix" && key == "access-token-style" {
-                return Err(renamed_style_key(name));
+            if section == "nix" && OLD_PREFIX_KEYS.contains(&key) {
+                return Err(renamed_prefix_key(name, key));
             }
         }
     }
@@ -447,19 +446,22 @@ fn shape_error(name: &str, path: &str, message: &str, table: &toml::Table) -> Er
     }
     match path {
         "oauth2.flow" => config("\"flow\" must be \"device\" or \"authorization_code\"".into()),
-        "nix.access_token_style" => {
+        "nix.access_token_prefix" => {
             let old = table
                 .get("nix")
-                .and_then(|n| n.get("access_token_style"))
+                .and_then(|n| n.get("access_token_prefix"))
                 .and_then(|v| v.as_str());
-            match old {
-                Some(old @ ("github" | "gitlab")) => {
-                    let new = if old == "github" { "plain" } else { "typed" };
-                    config(format!(
-                        "style \"{old}\" was renamed to \"{new}\" in [{name}.nix]"
-                    ))
-                }
-                _ => style_error(name),
+            // The values of the earlier spellings name their replacement
+            let renamed = |old: &str| match old {
+                "plain" | "github" => Some("none"),
+                "typed" | "gitlab" => Some("by_type"),
+                _ => None,
+            };
+            match old.and_then(|o| renamed(o).map(|n| (o, n))) {
+                Some((old, new)) => config(format!(
+                    "value \"{old}\" was renamed to \"{new}\" in [{name}.nix]"
+                )),
+                None => prefix_error(name),
             }
         }
         p if p.starts_with("nix.use") => use_error(name),
@@ -553,12 +555,12 @@ fn validate(name: &str, raw: RawProfile) -> Result<Profile> {
                     (token, netrc)
                 }
             };
-            if nix.access_token_style.is_some() && !token {
+            if nix.access_token_prefix.is_some() && !token {
                 return Err(config(format!(
-                    "\"access_token_style\" needs \"access-token\" in \"use\" in [{name}.nix]"
+                    "\"access_token_prefix\" needs \"access-token\" in \"use\" in [{name}.nix]"
                 )));
             }
-            (token.then_some(nix.access_token_style), netrc)
+            (token.then_some(nix.access_token_prefix), netrc)
         }
     };
 
@@ -691,7 +693,7 @@ scopes = ["read_api"]
 
 [company.nix]
 use = ["access-token", "netrc"]
-access_token_style = "typed"
+access_token_prefix = "by_type"
 "#;
 
     fn error(text: &str) -> String {
@@ -703,7 +705,7 @@ access_token_style = "typed"
         let config = Config::parse(GOOD).unwrap();
         assert_eq!(config.profiles.len(), 2);
         assert_eq!(config.profiles[0].host, "cache.example.com");
-        assert_eq!(config.profile("company").unwrap().style(), Style::Typed);
+        assert_eq!(config.profile("company").unwrap().prefix(), Prefix::ByType);
     }
 
     #[test]
@@ -726,7 +728,7 @@ access_token_style = "typed"
         assert_eq!(
             oauth.profiles[0].delivery(),
             Delivery {
-                access_token: Some(Style::Plain),
+                access_token: Some(Prefix::Bare),
                 netrc: false
             }
         );
@@ -734,7 +736,7 @@ access_token_style = "typed"
         assert_eq!(
             both,
             Delivery {
-                access_token: Some(Style::Typed),
+                access_token: Some(Prefix::ByType),
                 netrc: true
             }
         );
@@ -763,7 +765,7 @@ access_token_style = "typed"
         // Flow details, scopes and style do not matter
         let relaxed = GOOD
             .replace("[\"read_api\"]", "[\"read_api\", \"read_user\"]")
-            .replace("\"typed\"", "\"plain\"")
+            .replace("\"by_type\"", "\"none\"")
             .replace("oauth/token", "oauth/token2");
         let id_relaxed = Config::parse(&relaxed)
             .unwrap()
@@ -801,25 +803,33 @@ access_token_style = "typed"
             "http://127.0.0.1:9/t",
         );
         assert!(Config::parse(&loopback).is_ok());
-        let style = GOOD.replace("\"typed\"", "\"bitbucket\"");
+        let style = GOOD.replace("\"by_type\"", "\"bitbucket\"");
         assert!(error(&style)
-            .contains("\"access_token_style\" must be \"plain\" or \"typed\" in [company.nix]"));
-        let old = GOOD.replace("\"typed\"", "\"gitlab\"");
-        assert!(error(&old).contains("style \"gitlab\" was renamed to \"typed\""));
-        let old = GOOD.replace("\"typed\"", "\"github\"");
-        assert!(error(&old).contains("style \"github\" was renamed to \"plain\""));
-        let outside = "[a]\nhost=\"h.example\"\ntype=\"basic\"\naccess_token_style=\"plain\"\n";
+            .contains("\"access_token_prefix\" must be \"none\" or \"by_type\" in [company.nix]"));
+        let old = GOOD.replace("\"by_type\"", "\"gitlab\"");
+        assert!(error(&old).contains("value \"gitlab\" was renamed to \"by_type\""));
+        let old = GOOD.replace("\"by_type\"", "\"github\"");
+        assert!(error(&old).contains("value \"github\" was renamed to \"none\""));
+        let old = GOOD.replace("\"by_type\"", "\"typed\"");
+        assert!(error(&old).contains("value \"typed\" was renamed to \"by_type\""));
+        let outside = "[a]\nhost=\"h.example\"\ntype=\"basic\"\naccess_token_prefix=\"none\"\n";
         assert_eq!(
             error(outside),
-            "profile \"a\": \"access_token_style\" belongs in [a.nix]"
+            "profile \"a\": \"access_token_prefix\" belongs in [a.nix]"
         );
         let hyphen =
             "[a]\nhost=\"h.example\"\ntype=\"basic\"\n[a.nix]\naccess-token-style=\"plain\"\n";
-        assert!(error(hyphen).contains("renamed to \"access_token_style\""));
+        assert!(error(hyphen).contains("renamed to \"access_token_prefix\""));
         let renamed = "[a]\nhost=\"h.example\"\ntype=\"basic\"\nstyle=\"plain\"\n";
-        assert!(error(renamed).contains("renamed to \"access_token_style\" in [a.nix]"));
+        assert!(error(renamed).contains("renamed to \"access_token_prefix\" in [a.nix]"));
+        let previous =
+            "[a]\nhost=\"h.example\"\ntype=\"basic\"\n[a.nix]\naccess_token_style=\"plain\"\n";
+        assert_eq!(
+            error(previous),
+            "profile \"a\": \"access_token_style\" was renamed to \"access_token_prefix\" in [a.nix]"
+        );
         let style_without_token = "[a]\nhost=\"h.example\"\ntype=\"basic\"\n[a.nix]\n\
-                                   access_token_style=\"plain\"\n";
+                                   access_token_prefix=\"none\"\n";
         assert!(error(style_without_token).contains("needs \"access-token\" in \"use\""));
     }
 
@@ -865,9 +875,9 @@ access_token_style = "typed"
         assert!(both.netrc && both.access_token.is_some());
         let token_only = delivery(
             "basic",
-            "use = [\"access-token\"]\naccess_token_style = \"plain\"",
+            "use = [\"access-token\"]\naccess_token_prefix = \"none\"",
         );
-        assert!(!token_only.netrc && token_only.access_token == Some(Style::Plain));
+        assert!(!token_only.netrc && token_only.access_token == Some(Prefix::Bare));
     }
 
     #[test]

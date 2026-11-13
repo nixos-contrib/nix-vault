@@ -84,7 +84,7 @@ mod tests {
     fn config(extra_basic: &str, extra_oauth: &str, host: &str) -> Config {
         Config::parse(&format!(
             "[b]\nhost=\"{host}\"\ntype=\"basic\"\n{extra_basic}\n\
-             [o]\nhost=\"{host}\"\ntype=\"oauth2\"\nclient_id=\"c\"\nflow=\"device\"\n\
+             [o]\nhost=\"{host}\"\ntype=\"oauth2\"\n[o.oauth2]\nclient_id=\"c\"\nflow=\"device\"\n\
              device_authorization_endpoint=\"https://{host}/d\"\n\
              token_endpoint=\"https://{host}/t\"\n{extra_oauth}\n"
         ))

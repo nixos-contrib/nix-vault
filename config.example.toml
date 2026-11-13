@@ -1,9 +1,13 @@
 # nix-vault configuration: ~/.config/nix-vault/config.toml
 #
 # Each top-level table is a profile with one host and one authentication type, `basic` or
-# `oauth2`. The file never holds usernames, passwords or tokens: `nix-vault login` asks for them
-# and keeps them in the system keychain. Endpoint values below are illustrative; they must
-# match the real service.
+# `oauth2`. A profile has up to three kinds of sub-table:
+#   - the sub-table named after its type holds the authentication settings (`[<profile>.oauth2]`;
+#     basic profiles have none, they are asked for a username and password at login);
+#   - `[<profile>.access-token]` and `[<profile>.netrc]` choose how credentials reach Nix.
+# The file never holds usernames, passwords or tokens: `nix-vault login` asks for them and keeps
+# them in the system keychain. Endpoint values below are illustrative; they must match the real
+# service.
 
 # A private binary cache that needs a login. Basic profiles are presented to Nix through netrc
 # unless you say otherwise.
@@ -16,6 +20,8 @@ type = "basic"
 [company]
 host = "gitlab.example.com"
 type = "oauth2"
+
+[company.oauth2]
 client_id = "public-client-id"            # a public client: there is no client secret
 flow = "device"                           # or "authorization_code" (with PKCE)
 device_authorization_endpoint = "https://gitlab.example.com/oauth/authorize_device"
@@ -26,6 +32,8 @@ scopes = ["read_api"]
 [github]
 host = "github.com"
 type = "oauth2"
+
+[github.oauth2]
 client_id = "your-github-oauth-app-client-id"
 flow = "authorization_code"
 authorization_endpoint = "https://github.com/login/oauth/authorize"
@@ -37,13 +45,15 @@ scopes = ["repo"]
 [mono]
 host = "git.example.com"
 type = "oauth2"
+
+[mono.oauth2]
 client_id = "another-public-client-id"
 flow = "device"
 device_authorization_endpoint = "https://git.example.com/oauth/authorize_device"
 token_endpoint = "https://git.example.com/oauth/token"
 
 [mono.access-token]
-style = "typed"       # "plain" renders host=<token> (github.com, Gitea, Forgejo, ...);
+style = "typed"        # "plain" renders host=<token> (github.com, Gitea, Forgejo, ...);
                        # "typed" renders host=OAuth2:<token> (host=PAT:<token> for basic
                        # profiles), which is what GitLab expects. Default: plain for github.com,
                        # typed for every other host.

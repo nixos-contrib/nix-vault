@@ -42,6 +42,8 @@ type = "basic"
 [company]
 host = "gitlab.example.com"
 type = "oauth2"
+
+[company.oauth2]
 client_id = "public-client-id"
 flow = "device"                                   # or "authorization_code" (PKCE)
 device_authorization_endpoint = "https://gitlab.example.com/oauth/authorize_device"
@@ -50,7 +52,8 @@ scopes = ["read_api"]
 ```
 
 The file never holds usernames, passwords, access tokens or refresh tokens, and the whole file is
-validated before any command runs; errors name the profile and the key. There are no profile
+validated before any command runs (a sub-table that does not match the profile's `type` is
+rejected); errors name the profile and the key. There are no profile
 groups, inheritance or reusable sources.
 
 ### How credentials reach Nix

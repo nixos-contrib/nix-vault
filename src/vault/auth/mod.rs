@@ -226,7 +226,7 @@ mod tests {
     fn profiles() -> (Profile, Profile) {
         let config = Config::parse(
             "[b]\nhost=\"h.example\"\ntype=\"basic\"\n\
-             [o]\nhost=\"g.example\"\ntype=\"oauth2\"\nclient_id=\"c\"\nflow=\"device\"\n\
+             [o]\nhost=\"g.example\"\ntype=\"oauth2\"\n[o.oauth2]\nclient_id=\"c\"\nflow=\"device\"\n\
              device_authorization_endpoint=\"https://g.example/d\"\n\
              token_endpoint=\"https://g.example/t\"\n",
         )

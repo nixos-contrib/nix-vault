@@ -24,7 +24,7 @@ const SECRET_KEYS: [&str; 6] = [
 ];
 /// Keys valid for every profile.
 const COMMON_KEYS: [&str; 4] = ["host", "type", "access-token", "netrc"];
-/// Keys valid only for oauth2 profiles.
+/// Keys valid inside `[<name>.oauth2]`.
 const OAUTH_KEYS: [&str; 6] = [
     "client_id",
     "flow",
@@ -347,12 +347,17 @@ fn parse_profile(name: &str, table: &toml::Table) -> Result<Profile> {
         if COMMON_KEYS.contains(&key) {
             continue;
         }
-        if OAUTH_KEYS.contains(&key) {
+        if key == "oauth2" {
             if is_oauth {
                 continue;
             }
             return Err(Error::config(format!(
-                "profile \"{name}\": \"{key}\" is only valid for oauth2 profiles"
+                "profile \"{name}\": \"oauth2\" is only valid for oauth2 profiles"
+            )));
+        }
+        if OAUTH_KEYS.contains(&key) {
+            return Err(Error::config(format!(
+                "profile \"{name}\": \"{key}\" belongs in [{name}.oauth2]"
             )));
         }
         return Err(unknown_key(name, key));
@@ -361,7 +366,20 @@ fn parse_profile(name: &str, table: &toml::Table) -> Result<Profile> {
     let host = parse_host(name, &required_string(name, table, "host")?)?;
 
     let kind = if is_oauth {
-        Kind::OAuth2(parse_oauth(name, table)?)
+        let oauth = match table.get("oauth2") {
+            Some(toml::Value::Table(oauth)) => oauth,
+            Some(_) => {
+                return Err(Error::config(format!(
+                    "profile \"{name}\": \"oauth2\" must be a table"
+                )))
+            }
+            None => {
+                return Err(Error::config(format!(
+                    "profile \"{name}\": missing required table [{name}.oauth2]"
+                )))
+            }
+        };
+        Kind::OAuth2(parse_oauth(name, oauth)?)
     } else {
         Kind::Basic
     };
@@ -388,6 +406,15 @@ fn parse_profile(name: &str, table: &toml::Table) -> Result<Profile> {
 }
 
 fn parse_oauth(name: &str, table: &toml::Table) -> Result<OAuth> {
+    for key in table.keys() {
+        let key = key.as_str();
+        if SECRET_KEYS.contains(&key) {
+            return Err(secret_error(name, key));
+        }
+        if !OAUTH_KEYS.contains(&key) {
+            return Err(unknown_key(name, key));
+        }
+    }
     let client_id = required_string(name, table, "client_id")?;
     let flow = match required_string(name, table, "flow")?.as_str() {
         "device" => Flow::Device,
@@ -564,6 +591,8 @@ type = "basic"
 [company]
 host = "gitlab.example.com"
 type = "oauth2"
+
+[company.oauth2]
 client_id = "public-client-id"
 flow = "device"
 device_authorization_endpoint = "https://gitlab.example.com/oauth/authorize_device"
@@ -600,7 +629,7 @@ style = "typed"
             }
         );
         let oauth = Config::parse(
-            "[a]\nhost=\"github.com\"\ntype=\"oauth2\"\nclient_id=\"c\"\nflow=\"device\"\n\
+            "[a]\nhost=\"github.com\"\ntype=\"oauth2\"\n[a.oauth2]\nclient_id=\"c\"\nflow=\"device\"\n\
              device_authorization_endpoint=\"https://github.com/d\"\n\
              token_endpoint=\"https://github.com/t\"\n",
         )
@@ -701,8 +730,26 @@ style = "typed"
 
     #[test]
     fn oauth_keys_need_an_oauth_profile_and_flow_endpoints_match() {
-        let basic = "[a]\nhost=\"h.example\"\ntype=\"basic\"\nclient_id=\"c\"\n";
-        assert!(error(basic).contains("\"client_id\" is only valid for oauth2 profiles"));
+        let top_level = "[a]\nhost=\"h.example\"\ntype=\"basic\"\nclient_id=\"c\"\n";
+        assert_eq!(
+            error(top_level),
+            "profile \"a\": \"client_id\" belongs in [a.oauth2]"
+        );
+        let basic = "[a]\nhost=\"h.example\"\ntype=\"basic\"\n[a.oauth2]\nclient_id=\"c\"\n";
+        assert_eq!(
+            error(basic),
+            "profile \"a\": \"oauth2\" is only valid for oauth2 profiles"
+        );
+        let no_table = "[a]\nhost=\"h.example\"\ntype=\"oauth2\"\n";
+        assert_eq!(
+            error(no_table),
+            "profile \"a\": missing required table [a.oauth2]"
+        );
+        let unknown = GOOD.replace("scopes =", "audience = \"x\"\nscopes =");
+        assert_eq!(
+            error(&unknown),
+            "profile \"company\": unknown key \"audience\""
+        );
         let missing_client = GOOD.replace("client_id = \"public-client-id\"\n", "");
         assert!(error(&missing_client).contains("missing required key \"client_id\""));
         let wrong_endpoint =

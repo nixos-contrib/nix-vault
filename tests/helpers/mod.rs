@@ -187,6 +187,8 @@ type = "basic"
 [company]
 host = "gitlab.example.com"
 type = "oauth2"
+
+[company.oauth2]
 client_id = "public-client-id"
 flow = "device"
 device_authorization_endpoint = "https://gitlab.example.com/oauth/authorize_device"

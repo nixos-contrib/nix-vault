@@ -164,7 +164,7 @@ pub fn oauth_config(base: &str, flow: &str) -> String {
         format!("authorization_endpoint = \"{base}/authorize\"")
     };
     format!(
-        "[company]\nhost = \"gitlab.example.com\"\ntype = \"oauth2\"\nclient_id = \"public-client-id\"\n\
+        "[company]\nhost = \"gitlab.example.com\"\ntype = \"oauth2\"\n[company.oauth2]\nclient_id = \"public-client-id\"\n\
          flow = \"{flow}\"\n{endpoint}\ntoken_endpoint = \"{base}/token\"\nscopes = [\"read_api\"]\n"
     )
 }

@@ -8,7 +8,7 @@ use crate::helpers::*;
 fn shows_each_credential_state_without_secrets() {
     let ws = Workspace::new(&format!(
         "{CONFIG}\n[old]\nhost = \"git.example.com\"\ntype = \"basic\"\n\
-         [soon]\nhost = \"soon.example.com\"\ntype = \"oauth2\"\nclient_id = \"c\"\n\
+         [soon]\nhost = \"soon.example.com\"\ntype = \"oauth2\"\n[soon.oauth2]\nclient_id = \"c\"\n\
          flow = \"device\"\ndevice_authorization_endpoint = \"https://soon.example.com/d\"\n\
          token_endpoint = \"https://soon.example.com/t\"\n"
     ));

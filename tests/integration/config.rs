@@ -18,7 +18,7 @@ const BASIC: &str = "[a]\nhost = \"h.example\"\ntype = \"basic\"\n";
 #[test]
 fn valid_file_with_every_profile_shape_lists() {
     let config = format!(
-        "{CONFIG}\n[work]\nhost = \"github.com\"\ntype = \"oauth2\"\nclient_id = \"c\"\n\
+        "{CONFIG}\n[work]\nhost = \"github.com\"\ntype = \"oauth2\"\n[work.oauth2]\nclient_id = \"c\"\n\
          flow = \"authorization_code\"\nauthorization_endpoint = \"https://github.com/a\"\n\
          token_endpoint = \"https://github.com/t\"\n[work.access-token]\n[work.netrc]\n"
     );
@@ -96,7 +96,15 @@ fn rejects_netrc_keys_and_oauth_keys_on_basic() {
     }
     fails_with(
         &format!("{BASIC}client_id = \"c\"\n"),
-        "\"client_id\" is only valid for oauth2 profiles",
+        "\"client_id\" belongs in [a.oauth2]",
+    );
+    fails_with(
+        &format!("{BASIC}[a.oauth2]\nclient_id = \"c\"\n"),
+        "\"oauth2\" is only valid for oauth2 profiles",
+    );
+    fails_with(
+        "[a]\nhost = \"h.example\"\ntype = \"oauth2\"\n",
+        "missing required table [a.oauth2]",
     );
 }
 

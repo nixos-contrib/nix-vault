@@ -25,8 +25,9 @@ impl FakeNix {
         nix
     }
 
-    pub fn binary(&self) -> PathBuf {
-        self.dir.join("nix")
+    /// The directory holding the stub `nix`; put it first on `PATH`.
+    pub fn bin_dir(&self) -> &Path {
+        &self.dir
     }
 
     pub fn json_path(&self) -> PathBuf {

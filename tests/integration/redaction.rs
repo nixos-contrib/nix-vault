@@ -92,8 +92,8 @@ fn nothing_secret_is_left_behind_in_the_workspace() {
         .assert()
         .success();
     ws.cmd().arg("list").assert().success();
-    // Outside the file store (which holds the fake credentials by design) no file may hold them
-    let text = ws.all_text_outside_store();
+    // No file, the encrypted store included, may hold them in the clear
+    let text = ws.all_text();
     for secret in [FAKE_USER, FAKE_PASSWORD, FAKE_TOKEN] {
         assert!(!text.contains(secret), "{secret} found in a leftover file");
     }

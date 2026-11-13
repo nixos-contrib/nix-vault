@@ -26,10 +26,10 @@ fn workspace(config: &str) -> Workspace {
 
 #[test]
 fn real_nix_sees_the_merged_access_tokens_through_the_include() {
-    let Some(nix) = real_nix() else {
+    if real_nix().is_none() {
         eprintln!("skipped: nix is not installed");
         return;
-    };
+    }
     let ws = workspace("[hub]\nhost = \"github.com\"\ntype = \"basic\"\n[hub.access-token]\n");
     ws.seed_basic(
         "hub",
@@ -39,7 +39,7 @@ fn real_nix_sees_the_merged_access_tokens_through_the_include() {
     );
     let out = ws
         .cmd()
-        .env("NIX_VAULT_NIX", &nix)
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("XDG_CACHE_HOME", ws.path().join("cache"))
         .env("NIX_CONFIG", "max-jobs = 3")
         .args(["exec", "-p", "hub", "--", "nix", "config", "show", "--json"])
@@ -83,7 +83,7 @@ fn real_nix_sends_the_netrc_login_to_a_cache_and_not_without_exec() {
 
     let mut with_exec = ws.cmd();
     with_exec
-        .env("NIX_VAULT_NIX", &nix)
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("XDG_CACHE_HOME", ws.path().join("cache"))
         .args(["exec", "-p", "cache", "--"])
         .args(probe);

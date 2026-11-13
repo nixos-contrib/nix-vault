@@ -1,9 +1,10 @@
 //! Secure credential storage.
 //!
-//! Credentials live in the platform keyring, one JSON entry per profile. There is no file
-//! fallback: when the keyring cannot be used the command fails (see [`open`]).
+//! Credentials live in the platform keyring, one JSON entry per profile. There is no automatic
+//! fallback: when the keyring cannot be used the command fails (see [`open`]). An encrypted file
+//! store exists for machines without a keychain, but only when selected explicitly with
+//! `NIX_VAULT_STORE=file`.
 
-#[cfg(feature = "file-store")]
 pub mod file;
 pub mod keyring;
 pub mod locker;
@@ -165,7 +166,7 @@ impl CredentialStore {
         CredentialStore { inner }
     }
 
-    /// Opens the store selected for this build (the keyring, or the file store).
+    /// Opens the selected store (the keyring, or the encrypted file store).
     pub fn open() -> Result<Self> {
         Ok(CredentialStore::new(open()?))
     }
@@ -199,14 +200,19 @@ impl CredentialStore {
     }
 }
 
-/// Opens the secret store for this build: the platform keyring, or, only in builds with the
-/// `file-store` feature and only when `NIX_VAULT_FILE_STORE_DIR` is set, the file store.
+/// Opens the secret store selected by `NIX_VAULT_STORE`: `keychain` (the default, the platform
+/// keyring) or `file` (the encrypted file store). The choice is never made automatically.
 pub fn open() -> Result<Box<dyn SecretStore>> {
-    #[cfg(feature = "file-store")]
-    if let Some(dir) = std::env::var_os("NIX_VAULT_FILE_STORE_DIR") {
-        return Ok(Box::new(file::FileStore::open(dir.into())?));
+    match std::env::var("NIX_VAULT_STORE").as_deref() {
+        Ok("") | Err(_) | Ok("keychain") => Ok(Box::new(keyring::Keychain::open()?)),
+        Ok("file") => Ok(Box::new(file::FileStore::open(
+            crate::vault::config::store_dir(),
+            file::Settings::from_env()?,
+        )?)),
+        Ok(other) => Err(Error::config(format!(
+            "NIX_VAULT_STORE must be \"keychain\" or \"file\", not \"{other}\""
+        ))),
     }
-    Ok(Box::new(keyring::Keychain::open()?))
 }
 
 #[cfg(test)]

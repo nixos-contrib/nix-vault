@@ -563,6 +563,17 @@ pub fn state_dir() -> PathBuf {
     base_dir("XDG_STATE_HOME", ".local/state").join("nix-vault")
 }
 
+/// Returns the directory of the encrypted file store: `$NIX_VAULT_STORE_DIR`, else
+/// `$XDG_DATA_HOME/nix-vault/credentials`, else `~/.local/share/nix-vault/credentials`.
+pub fn store_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("NIX_VAULT_STORE_DIR") {
+        return PathBuf::from(dir);
+    }
+    base_dir("XDG_DATA_HOME", ".local/share")
+        .join("nix-vault")
+        .join("credentials")
+}
+
 fn base_dir(xdg_variable: &str, home_relative: &str) -> PathBuf {
     match std::env::var_os(xdg_variable) {
         Some(dir) if !dir.is_empty() && Path::new(&dir).is_absolute() => PathBuf::from(dir),

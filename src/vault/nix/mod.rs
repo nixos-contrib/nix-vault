@@ -19,11 +19,7 @@ pub struct NixEffectiveConfig {
 }
 
 fn nix_binary() -> std::ffi::OsString {
-    // Release builds always use `nix` from PATH; the override exists for tests only
-    #[cfg(feature = "file-store")]
-    if let Some(binary) = std::env::var_os("NIX_VAULT_NIX") {
-        return binary;
-    }
+    // Always `nix` from PATH (tests put a stub first on PATH)
     "nix".into()
 }
 

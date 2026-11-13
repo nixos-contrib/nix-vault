@@ -201,7 +201,7 @@ fn a_nix_that_cannot_be_run_prevents_launch() {
     ws.seed_cache();
     let marker = ws.path().join("ran");
     ws.cmd()
-        .env("NIX_VAULT_NIX", "/definitely/not/nix")
+        .env("PATH", ws.path().join("no-such-dir"))
         .env("MARKER", &marker)
         .args(["exec", "-p", "cache", "--", "sh", "-c", "touch \"$MARKER\""])
         .assert()

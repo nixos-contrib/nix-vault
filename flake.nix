@@ -38,7 +38,7 @@
           cargoLock.lockFile = ./Cargo.lock;
           src = pkgs.lib.cleanSource ./.;
           # The tests need a writable HOME, loopback networking and the nix binary; CI runs them
-          # with `cargo test --features file-store` instead.
+          # with `cargo test` instead.
           doCheck = false;
           # Automatically ad-hoc signs binaries in $out/bin during fixup
           nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [

@@ -4,6 +4,7 @@
 
 pub mod fake_nix;
 pub mod oauth;
+pub mod vault;
 
 use std::{
     path::{Path, PathBuf},
@@ -26,7 +27,7 @@ pub fn binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_nix-vault"))
 }
 
-/// A temporary home with a configuration file, file store, state and temp directories.
+/// A temporary home with a configuration file, encrypted file store, state and temp directories.
 pub struct Workspace {
     pub dir: tempfile::TempDir,
     pub nix: FakeNix,
@@ -59,6 +60,15 @@ impl Workspace {
         self.path().join("tmp")
     }
 
+    /// The system `PATH` with `first` in front.
+    pub fn path_with(&self, first: impl AsRef<Path>) -> String {
+        format!(
+            "{}:{}",
+            first.as_ref().display(),
+            std::env::var("PATH").unwrap_or_default()
+        )
+    }
+
     pub fn set_config(&self, config: &str) {
         std::fs::write(self.config_file(), config).unwrap();
     }
@@ -66,13 +76,15 @@ impl Workspace {
     /// Environment shared by every invocation.
     pub fn apply_env(&self, cmd: &mut StdCommand) {
         cmd.env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("PATH", self.path_with(self.nix.bin_dir()))
             .env("HOME", self.path())
             .env("NIX_VAULT_CONFIG_FILE", self.config_file())
             .env("NIX_VAULT_STATE_DIR", self.path().join("state"))
-            .env("NIX_VAULT_FILE_STORE_DIR", self.store_dir())
+            .env("NIX_VAULT_STORE", "file")
+            .env("NIX_VAULT_STORE_DIR", self.store_dir())
+            .env("NIX_VAULT_STORE_PASSPHRASE", vault::PASSPHRASE)
+            .env("NIX_VAULT_STORE_WORK_FACTOR", "10")
             .env("TMPDIR", self.tmp_dir())
-            .env("NIX_VAULT_NIX", self.nix.binary())
             .env("FAKE_NIX_JSON", self.nix.json_path())
             .env("FAKE_NIX_LOG", self.nix.log_path());
     }
@@ -97,7 +109,7 @@ impl Workspace {
             r#"{{"schema":1,"identity":"{identity}","saved_at":"2026-01-01T00:00:00Z",
                 "basic":{{"username":"{user}","password":"{password}"}}}}"#
         );
-        std::fs::write(self.store_dir().join(format!("{profile}.json")), json).unwrap();
+        self.put(profile, json);
     }
 
     /// Writes a stored oauth2 credential. `expires_at` is RFC 3339 or `None`.
@@ -119,29 +131,34 @@ impl Workspace {
             r#"{{"schema":1,"identity":"{identity}","saved_at":"2026-01-01T00:00:00Z",
                 "oauth2":{{"access_token":"{access}"{refresh},"token_type":"bearer"{expires}}}}}"#
         );
-        std::fs::write(self.store_dir().join(format!("{profile}.json")), json).unwrap();
+        self.put(profile, json);
     }
 
+    /// Adds or replaces one entry of the encrypted store.
+    fn put(&self, profile: &str, json: String) {
+        let mut entries = vault::read(&self.store_dir());
+        entries.insert(profile.to_string(), json);
+        vault::write(&self.store_dir(), &entries);
+    }
+
+    /// The decrypted entry stored for `profile`, if any.
     pub fn stored(&self, profile: &str) -> Option<String> {
-        std::fs::read_to_string(self.store_dir().join(format!("{profile}.json"))).ok()
+        vault::read(&self.store_dir()).remove(profile)
     }
 
-    /// Every file under the workspace (excluding the file store, which legitimately holds the
-    /// fake credentials), concatenated, for leak checks.
-    pub fn all_text_outside_store(&self) -> String {
+    /// Every file under the workspace, concatenated, for leak checks. The encrypted store is
+    /// included: it must not hold any credential in the clear.
+    pub fn all_text(&self) -> String {
         let mut out = String::new();
-        let store = self.store_dir();
         let mut stack = vec![self.path().to_path_buf()];
         while let Some(dir) = stack.pop() {
             for entry in std::fs::read_dir(&dir).unwrap().flatten() {
                 let path = entry.path();
-                if path == store {
-                    continue;
-                }
                 if path.is_dir() {
                     stack.push(path);
-                } else if let Ok(text) = std::fs::read_to_string(&path) {
-                    out.push_str(&text);
+                } else if let Ok(bytes) = std::fs::read(&path) {
+                    // Lossy, so binary files (the encrypted store) are searched as well
+                    out.push_str(&String::from_utf8_lossy(&bytes));
                 }
             }
         }

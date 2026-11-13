@@ -31,12 +31,12 @@ jobs:
         run: nix develop --command cargo fmt --check
 
       - name: Lint
-        run: nix develop --command cargo clippy --all-targets --features file-store -- -D warnings
+        run: nix develop --command cargo clippy --all-targets -- -D warnings
 
       # Tests use fake credentials, a mock OAuth provider and a fake `nix`; the tests that need the
       # real `nix` run here because the installer put it on PATH. No real accounts are needed.
       - name: Run Tests
-        run: nix develop --command cargo test --features file-store
+        run: nix develop --command cargo test
 
       - name: Nix package builds
         if: runner.os == 'Linux'
@@ -111,11 +111,10 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
-      # Release builds never enable the file-store feature
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
 
-      - name: Check the binary runs on its own and has no test code
+      - name: Check the binary runs on its own
         run: |
           bin=target/${{ matrix.target }}/release/nix-vault
           file "$bin"
@@ -125,7 +124,6 @@ jobs:
           else
             file "$bin" | grep -Eq 'static(ally|-pie)? linked'
           fi
-          ! strings "$bin" | grep -q -E 'NIX_VAULT_FILE_STORE_DIR|NIX_VAULT_NIX'
           case "${{ matrix.target }}" in
             x86_64-apple-darwin) ;; # cross-compiled; the arm64 runner can't always run it
             *) "$bin" --version ;;

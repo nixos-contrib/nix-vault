@@ -26,7 +26,32 @@ cargo install nix-vault
 
 Supported: macOS and Linux (including NixOS). On Linux the credentials go to the Secret Service
 (for example gnome-keyring or KeePassXC), so one must be running in your session. nix-vault never
-falls back to plaintext files: without a usable keychain, `login` fails.
+falls back to another store by itself: without a usable keychain, `login` fails.
+
+### Without a keychain: the encrypted file store
+
+On a machine with no keychain (a headless box, a minimal container) you can opt in to an
+encrypted file store. Nothing is ever written in the clear: all profiles live in one file
+encrypted with a passphrase ([age](https://age-encryption.org), scrypt).
+
+| Variable | Meaning |
+|----------|---------|
+| `NIX_VAULT_STORE` | `keychain` (default) or `file`. Never chosen automatically. |
+| `NIX_VAULT_STORE_DIR` | where the file lives; default `$XDG_DATA_HOME/nix-vault/credentials` (`~/.local/share/nix-vault/credentials`). The directory is created with mode 0700 and the file is 0600. |
+| `NIX_VAULT_STORE_PASSPHRASE_FILE` | path of a file whose content is the passphrase (preferred for scripts). |
+| `NIX_VAULT_STORE_PASSPHRASE` | the passphrase itself. It protects against casual reads of the file, not against anyone who can read your process environment. |
+| `NIX_VAULT_STORE_WORK_FACTOR` | scrypt work factor, 10 to 22 (default 18). Lowering it weakens the protection; the test suite uses it to stay fast. |
+
+The passphrase is taken from the file, then the variable, then a hidden prompt when stdin is a
+terminal (twice when the store is created); with none of those the command fails. A wrong
+passphrase or a damaged file is an error and nothing is overwritten. The store needs the same
+passphrase for every profile, and a lost passphrase cannot be recovered: log in again.
+
+```bash
+export NIX_VAULT_STORE=file
+nix-vault login --profile cache     # asks for a new passphrase the first time
+nix-vault exec -p cache -- nix build
+```
 
 ## Configuration
 
@@ -140,14 +165,14 @@ arguments or the environment.
 
 ```bash
 nix develop                                   # pinned Rust toolchain
-cargo fmt --check && cargo clippy --all-targets --features file-store -- -D warnings
-cargo test --features file-store              # unit + CLI + integration tests
+cargo fmt --check && cargo clippy --all-targets -- -D warnings
+cargo test                                    # unit + CLI + integration tests
 cargo test -- --ignored keyring_smoke         # real keychain round trip (manual)
 ```
 
-Tests use fake credentials, a scripted mock OAuth provider on a loopback port, and a fake `nix`
-(the tests that need the real `nix` skip themselves when it is absent). The `file-store` feature
-adds a file-backed credential store for those tests; release builds must never enable it.
+Tests use fake credentials, a scripted mock OAuth provider on a loopback port, a fake `nix` put
+first on `PATH` (the tests that need the real `nix` skip themselves when it is absent), and the
+encrypted file store with a fake passphrase, so they exercise the same code users run.
 
 ## License
 

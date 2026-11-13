@@ -13,11 +13,6 @@ repository = "https://github.com/nixos-contrib/nix-vault"
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }"
 pkg-fmt = "bin"
 
-[features]
-# File-backed credential store used only by automated tests (fake credentials). Release builds
-# must never enable it: it is the only way credentials can be kept outside the system keychain.
-file-store = []
-
 [dependencies]
 clap = { version = "4", features = ["derive", "env", "string"] }
 fd-lock = "4"
@@ -35,6 +30,7 @@ tempfile = "3"
 time = { version = "0.3", features = ["formatting", "parsing", "serde-well-known", "macros"] }
 toml = { version = "1", features = ["preserve_order"] }
 webbrowser = "1"
+age = { version = "0.12.1", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1", features = ["keychain"] }

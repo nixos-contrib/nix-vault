@@ -34,13 +34,14 @@ fn soon() -> String {
 const SHOW_STORE: &str = r#"
 conf=${NIX_CONFIG##*!include }
 cat "$conf"
-echo '--- store'
-cat "$STORE/company.json"
+# Snapshot the encrypted store as it is when the child starts
+cp "$STORE/credentials.age" "$SNAPSHOT"
 "#;
 
 fn exec_show(ws: &Workspace) -> assert_cmd::assert::Assert {
     ws.cmd()
         .env("STORE", ws.store_dir())
+        .env("SNAPSHOT", ws.path().join("snapshot.age"))
         .args(["exec", "-p", "company", "--", "sh", "-c", SHOW_STORE])
         .assert()
 }
@@ -69,7 +70,8 @@ fn an_expiring_token_is_refreshed_and_the_rotated_refresh_token_is_saved_before_
         "{text}"
     );
     // ... and the rotated refresh token was already stored when the child ran
-    let store = text.split("--- store\n").nth(1).unwrap();
+    let snapshot = vault::read_file(&ws.path().join("snapshot.age")).unwrap();
+    let store = &snapshot["company"];
     assert!(store.contains("NEW_REFRESH") && store.contains("NEW_ACCESS"));
     assert!(!store.contains("OLD_REFRESH") && !store.contains("OLD_ACCESS"));
     // The refresh request carried the old refresh token and the client id
@@ -211,9 +213,11 @@ fn a_failure_to_save_the_refreshed_tokens_fails_loudly_without_printing_them() {
         Some("OLD_REFRESH"),
         Some(&soon()),
     );
+    // Reading the store works but its lock cannot be taken (a directory sits where the lock
+    // file belongs), so writing the refreshed credentials fails
+    std::fs::create_dir(ws.store_dir().join(".lock")).unwrap();
     let output = ws
         .cmd()
-        .env("NIX_VAULT_FILE_STORE_FAIL_SET", "1")
         .args(["exec", "-p", "company", "--", "true"])
         .assert()
         .code(1)
@@ -247,14 +251,14 @@ fn concurrent_runs_refresh_only_once() {
     let mut children = Vec::new();
     for _ in 0..2 {
         let mut cmd = ws.std_cmd();
-        cmd.env("STORE", ws.store_dir()).args([
+        cmd.args([
             "exec",
             "-p",
             "company",
             "--",
             "sh",
             "-c",
-            "grep -q NEW_ACCESS \"$STORE/company.json\"",
+            "grep -q NEW_ACCESS \"${NIX_CONFIG##*!include }\"",
         ]);
         children.push(cmd.spawn().unwrap());
     }

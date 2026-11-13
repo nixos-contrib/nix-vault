@@ -143,15 +143,46 @@ fn without_a_terminal_credentials_cannot_be_asked_for() {
 }
 
 #[test]
-fn an_unavailable_store_fails_clearly_and_writes_nothing() {
+fn a_store_that_cannot_be_decrypted_fails_clearly_and_changes_nothing() {
     let ws = Workspace::new(CONFIG);
-    ws.cmd()
-        .env("NIX_VAULT_FILE_STORE_FAIL", "1")
-        .args(["login", "-p", "cache"])
+    ws.seed_cache();
+    let file = ws.store_dir().join(vault::FILE);
+    let before = std::fs::read(&file).unwrap();
+    let output = ws
+        .cmd()
+        .env("NIX_VAULT_STORE_PASSPHRASE", "not-the-passphrase")
+        .args(["login", "-p", "cache", "--force"])
         .write_stdin("x\ny\n")
         .assert()
         .code(1)
-        .stderr(predicate::str::contains("credential store unavailable"));
-    assert!(ws.stored("cache").is_none());
-    assert_no_secrets(&ws.all_text_outside_store(), &[FAKE_PASSWORD, "y\n"]);
+        .stderr(predicate::str::contains("credential store unavailable"))
+        .stderr(predicate::str::contains("wrong passphrase or damaged file"))
+        .get_output()
+        .clone();
+    assert_eq!(std::fs::read(&file).unwrap(), before);
+    assert_no_secrets(
+        &String::from_utf8_lossy(&output.stderr),
+        &[FAKE_PASSWORD, "not-the-passphrase"],
+    );
+}
+
+#[test]
+fn a_missing_passphrase_without_a_terminal_fails_clearly() {
+    let ws = Workspace::new(CONFIG);
+    ws.seed_cache();
+    ws.cmd()
+        .env_remove("NIX_VAULT_STORE_PASSPHRASE")
+        .arg("list")
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("credential store unavailable"))
+        .stderr(predicate::str::contains("needs a passphrase"));
+    // A store that does not exist yet needs none, so a fresh machine can list its profiles
+    let fresh = Workspace::new(CONFIG);
+    fresh
+        .cmd()
+        .env_remove("NIX_VAULT_STORE_PASSPHRASE")
+        .arg("list")
+        .assert()
+        .success();
 }

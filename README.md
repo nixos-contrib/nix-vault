@@ -16,6 +16,22 @@ nix-vault login --profile cache                 # once
 nix-vault exec -p company -p cache -- nix build # credentials exist only for this command
 ```
 
+```text
+ login ──► your keychain (once)
+ exec  ──► session credentials ──► your command (nix build ...) ──► removed when it ends
+```
+
+## Pick your setup
+
+| You want | Use | Read |
+|----------|-----|------|
+| A login to a private cache or forge, kept in your keychain | a `basic` or `oauth2` profile | [Configuration](docs/configuration.md) |
+| A service behind Cloudflare Access, or one that needs custom headers | the local proxy delivery | [Cloudflare Access](docs/cloudflare-access.md) |
+| A token that another tool prints (`cloudflared`, 1Password, a script) | a `process` profile | [Process profiles](docs/process-profiles.md) |
+| CI, or a machine with no keychain | environment variables, or the encrypted file store | [CI](docs/ci.md) |
+
+All the guides are in [docs/](docs/README.md).
+
 ## Install
 
 ```bash
@@ -28,36 +44,14 @@ Supported: macOS and Linux (including NixOS). On Linux the credentials go to the
 (for example gnome-keyring or KeePassXC), so one must be running in your session. nix-vault never
 falls back to another store by itself: without a usable keychain, `login` fails.
 
-### Without a keychain: the encrypted file store
-
-On a machine with no keychain (a headless box, a minimal container) you can opt in to an
-encrypted file store. Nothing is ever written in the clear: all profiles live in one file
-encrypted with a passphrase ([age](https://age-encryption.org), scrypt).
-
-| Variable | Meaning |
-|----------|---------|
-| `NIX_VAULT_STORE` | `keychain` (default) or `file`. Never chosen automatically. |
-| `NIX_VAULT_STORE_DIR` | where the file lives; default `$XDG_DATA_HOME/nix-vault/credentials` (`~/.local/share/nix-vault/credentials`). The directory is created with mode 0700 and the file is 0600. |
-| `NIX_VAULT_STORE_PASSPHRASE_FILE` | path of a file whose content is the passphrase (preferred for scripts). |
-| `NIX_VAULT_STORE_PASSPHRASE` | the passphrase itself. It protects against casual reads of the file, not against anyone who can read your process environment. |
-| `NIX_VAULT_STORE_WORK_FACTOR` | scrypt work factor, 10 to 22 (default 18). Lowering it weakens the protection; the test suite uses it to stay fast. |
-
-The passphrase is taken from the file, then the variable, then a hidden prompt when stdin is a
-terminal (twice when the store is created); with none of those the command fails. A wrong
-passphrase or a damaged file is an error and nothing is overwritten. The store needs the same
-passphrase for every profile, and a lost passphrase cannot be recovered: log in again.
-
-```bash
-export NIX_VAULT_STORE=file
-nix-vault login --profile cache     # asks for a new passphrase the first time
-nix-vault exec -p cache -- nix build
-```
+A machine without a keychain, such as a headless box or a CI runner, can use environment variables
+or an opt-in encrypted file store: see [CI](docs/ci.md).
 
 ## Configuration
 
 Profiles live in `~/.config/nix-vault/config.toml` (or `$XDG_CONFIG_HOME/nix-vault/config.toml`,
 or the file named by `--config` / `NIX_VAULT_CONFIG_FILE`). Each top-level table is a profile with
-one `host` and one `type`, `basic` or `oauth2`. See [`config.example.toml`](config.example.toml).
+one `host` and one `type`: `basic`, `oauth2` or `process`.
 
 ```toml
 [cache]
@@ -77,175 +71,8 @@ scopes = ["read_api"]
 ```
 
 The file never holds usernames, passwords, access tokens or refresh tokens, and the whole file is
-validated before any command runs (a sub-table that does not match the profile's `type` is
-rejected); errors name the profile and the key. There are no profile
-groups, inheritance or reusable sources.
-
-### How credentials reach Nix
-
-| `[<profile>.nix]` | Meaning |
-|-------------------|---------|
-| absent | oauth2 profiles use a Nix **access token**; basic profiles use **netrc** |
-| `use = [...]` | the mechanisms, a non-empty list of `"access-token"`, `"netrc"` and/or `"proxy"`. `"access-token"` presents the credential as an `access-tokens` entry (a basic profile used this way must hold a personal access token as its password). `"netrc"` presents it through netrc: basic profiles use the username given at login, oauth2 profiles use `oauth2`. `"proxy"` (not combined with the others) sends the credential through a local reverse proxy, see [Services behind Cloudflare Access](#services-behind-cloudflare-access). |
-| `access_token_prefix` | only with `"access-token"`: `none` (`host=<token>`: github.com, Gitea, Forgejo) or `by_type` (`host=OAuth2:<token>`, or `host=PAT:<token>` for basic profiles: GitLab). Default: `none` for the host `github.com`, otherwise `by_type`. |
-
-List both mechanisms to present one profile both ways. Keys use `snake_case`; values are spelled as the external system spells them (`authorization_code` as in OAuth, `access-token` and `netrc` as in Nix). Access tokens are used by Nix's own forge
-fetchers (flake inputs and `nix flake update`); netrc covers HTTP downloads and binary caches.
-
-### Services behind Cloudflare Access
-
-Nix can only send an `Authorization` header from netrc: it cannot send the headers Cloudflare
-Access wants for a service token. `use = ["proxy"]` covers that:
-
-```toml
-[cache]
-host = "nix.example.com"
-type = "basic"        # login stores the service token: client ID as username, secret as password
-
-[cache.nix]
-use = ["proxy"]
-
-[cache.proxy]
-headers = { CF-Access-Client-Id = "{username}", CF-Access-Client-Secret = "{password}" }
-```
-
-`exec` starts a small reverse proxy on `127.0.0.1` for the length of the command. It forwards each
-request over HTTPS to the profile's host, adds the headers of `[<profile>.proxy]`, and streams the bodies, so a large upload or download is never held in memory. The session `nix.conf`
-sets `substituters`: the entries for that host now point at the proxy (path and query kept), and the
-host is added when you do not list it. Your other substituters are kept.
-
-* **The headers.** `headers` is required with `use = ["proxy"]`. Names are spelled as HTTP spells
-  them; values are text in which the placeholders stand for the stored credential, so nothing
-  secret is written in the file: `{username}` and `{password}` for basic profiles, `{access_token}`
-  for oauth2 profiles. At least one header must use one. The headers that frame a message (`Host`,
-  `Content-Length`, ...) cannot be set. A header the client sends with the same name is replaced,
-  so `Authorization = "Bearer {access_token}"` works even though Nix itself can only send Basic.
-* **The address.** The local URL has a random path prefix, and anything outside it gets a 404, so
-  another user on the machine cannot borrow the credentials. It is passed to the command in
-  `NIX_VAULT_PROXY_<PROFILE>` (the profile name in capitals), for a command that names the service
-  itself: `nix-vault exec -p cache -- nix copy --to "$NIX_VAULT_PROXY_CACHE" ./result`.
-* **Permission.** Nix only honors a `substituters` setting from a session if you are allowed to use
-  it: a trusted user (`trusted-users`), or the address permitted by `trusted-substituters`.
-* **Two ways to get the credential.** A basic profile holds a service token. An oauth2 profile logs
-  in through the provider (for Cloudflare, an Access SaaS OIDC application: authorization code with
-  PKCE, `redirect_port` set to a registered redirect URL) and the proxy sends the access token as
-  configured:
-
-  ```toml
-  [cache]
-  host = "nix.example.com"
-  type = "oauth2"
-
-  [cache.oauth2]
-  client_id = "<the application's client ID>"
-  flow = "authorization_code"
-  authorization_endpoint = "https://<team>.cloudflareaccess.com/cdn-cgi/access/sso/oidc/<client ID>/authorization"
-  token_endpoint = "https://<team>.cloudflareaccess.com/cdn-cgi/access/sso/oidc/<client ID>/token"
-  scopes = ["openid", "email", "offline_access"]   # offline_access: a refresh token, so the proxy can renew the access token
-  redirect_port = 8251
-
-  [cache.nix]
-  use = ["proxy"]
-
-  [cache.proxy]
-  headers = { Authorization = "Bearer {access_token}" }
-  ```
-* **Renewal during the run.** The proxy asks for its headers on every request. For an oauth2
-  profile it renews the access token when it is within two minutes of its end, exchanging the
-  refresh token (and saving a rotated one), so a command that runs longer than the token lives
-  keeps working. This needs a refresh token: with Cloudflare Access add `offline_access` to `scopes`
-  (the dashboard does not list it, but the API accepts it when the application has a refresh token
-  lifetime). Concurrent requests share one renewal. When the token cannot be renewed (the refresh
-  token expired or was revoked, or there never was one) the proxy does not forward the request: it
-  answers `401` with a message that names the profile and says to run `nix-vault login`. A
-  service token (basic profile) does not expire during a run, so its headers never change. Headers
-  the client sends that the proxy does not replace are passed on untouched.
-
-### Credentials from the environment (CI)
-
-A CI runner has no keychain. A basic profile can read its username and password from environment
-variables instead of a stored login, so the same profile file works locally and in CI:
-
-```toml
-[gitlab-ci]
-host = "cache.example.com"
-type = "basic"
-
-[gitlab-ci.basic]
-username_env = "NIX_CACHE_USERNAME"
-password_env = "NIX_CACHE_TOKEN"
-```
-
-```yaml
-build:
-  variables:
-    NIX_CACHE_USERNAME: "oauth2"          # the username your cache expects
-  id_tokens:
-    NIX_CACHE_TOKEN:
-      aud: https://cache.example.com
-  script:
-    - nix-vault exec --profile gitlab-ci -- nix build
-```
-
-* **Names, not values.** The variable names are not secrets, so they may be in the file; a literal
-  `username` or `password` is still refused. Both variables are required, and they must be
-  different.
-* **Read when `exec` starts.** A variable that is not set, or is empty, stops `exec` before the
-  command is launched, with a message that names the variable (never its value).
-* **Nothing is stored and no store is opened.** The credentials never touch disk except the
-  session netrc (mode 0600), and neither the keychain nor the encrypted file store is opened for
-  these profiles, so a runner without a keychain works.
-* **Delivery is as for any basic profile**: netrc by default, or `use = ["proxy"]` with
-  `{username}` and `{password}` in the headers.
-* **`login`, `logout` and `list`.** `login` says the credentials come from the environment and does
-  nothing, `logout` has nothing to remove, and `list` shows "environment" without reading the
-  variables.
-* **The variables stay in the command's environment.** They were put there by the CI job, and
-  removing them would surprise a command that needs them too; nix-vault does not copy them anywhere
-  else. Use a job-scoped variable, and a short-lived one where the CI offers it (GitLab's ID
-  tokens, for example), so a leaked value is worth little.
-
-### Credentials from a command
-
-A `process` profile gets its credential from a helper command, in the manner of AWS's
-`credential_process`. Nothing is stored by nix-vault: `exec` runs the command each time, so the tool
-that owns the login stays in charge of it.
-
-```toml
-[team-cache]
-host = "nix.example.com"
-type = "process"
-
-[team-cache.process]
-command = ["cloudflared", "access", "token", "https://nix.example.com"]
-command_output_format = "text"      # the default
-
-[team-cache.proxy]
-headers = { cf-access-token = "{access_token}" }
-```
-
-* **The command** is an array: the program and its arguments, run without a shell. Its stderr and
-  stdin are your terminal's, so it can say what to do (`cloudflared` says to run its login) and can
-  prompt. It has 60 seconds and may print up to 64 KiB.
-* **`command_output_format`** is `text` (default): the output, trimmed, must be one token, which is
-  `{access_token}`; if it is a JWT, its `exp` is the expiry. Or `json`: `{"access_token": "...",
-  "expires_at": "..."}`, or `username` and `password`, with `expires_at` optional.
-* **Delivery** is the proxy, implied for this type, so `[<profile>.proxy]` is required and
-  `[<profile>.nix]` may be left out (or `use = ["proxy"]`). `{username}` and `{password}` are
-  available with `json`.
-* **When it fails** (a non-zero exit, a timeout, an expired token, output that is not a token),
-  `exec` stops before launching the command. The helper's own messages are above the error, which
-  names the profile and the command and never shows the output.
-* **While the command runs.** The proxy asks for its headers on every request. When the token the
-  helper printed is within two minutes of its end, the helper is run again (without a terminal
-  input, so it cannot take what you type for the command). If that fails the token that is still
-  good keeps being used, and the helper is tried again after ten seconds; once the token has
-  expired the request is not forwarded: the proxy answers `401` with a message that names the
-  profile. A token with no known expiry is kept for the whole command.
-* **`login` and `logout`** have nothing to do for this type, and `list` does not run the command.
-* **The config file is code.** Whoever can write it chooses what runs as you, so nix-vault refuses
-  a configuration file that other users can write when it has a process profile
-  (`chmod go-w <file>`).
+validated before any command runs. Every key and how credentials reach Nix are in
+[Configuration](docs/configuration.md); a full example is [`config.example.toml`](config.example.toml).
 
 ## Commands
 
@@ -274,51 +101,16 @@ Exit statuses: `0` success; `1` operational failure; `2` usage or configuration 
 command not executable / not found; otherwise the command's own status (or `128+n`, re-raising
 signal `n`).
 
-### What `exec` does to your Nix setup
-
-`exec` never edits `nix.conf` or your netrc. It reads your effective Nix settings
-(`nix config show --json`), writes a session `nix.conf` and netrc in a private directory
-(`<runtime dir>/nix-vault-<uid>/session-*`, mode 0700, files 0600), and extends the command's
-`NIX_CONFIG` with one `!include` line. Your existing netrc entries and `access-tokens` are carried
-over (the selected profile wins for a host both define, and a note names the host). If your
-`netrc-file` exists but cannot be read, the command still runs without its entries and a warning
-names the file. The session directory is removed when the command ends. Credentials are never put in
-arguments or the environment; with `proxy` the environment holds the local proxy's address, not the
-credential.
+How `exec` changes your Nix setup is in [docs/delivery.md](docs/delivery.md).
 
 ## Limitations
 
-* **Client-side only.** Credentials reach Nix commands run by `exec`: flake input fetches,
-  `nix flake update`, and downloads done in that client process. Downloads performed by the **Nix
-  daemon** (multi-user installs, NixOS) use the daemon's configuration and may not see session
-  credentials. On a trusted-user setup a client-supplied `netrc-file` was observed to reach daemon
-  substitution on macOS (Determinate Nix), but this is not guaranteed and was not verified for
-  untrusted users or on NixOS. Fetches inside **sandboxed builds** and **remote builders** are not
-  covered.
-* **No renewal while the command runs.** OAuth tokens are refreshed only before launch (when
-  expiry is known). A long command, such as a big `nix copy` or build, may outlive its token and
-  then fail with the service's own authorization error; nix-vault does not rerun it. Run it again
-  (the next `exec` refreshes first), or use a longer-lived token: a `basic` profile can hold a
-  personal access token. Nix reads `access-tokens` once at startup, so those cannot be renewed in
-  a running process. It re-reads the netrc file on every request (observed for client-side
-  fetches), so renewal during a run would be possible for netrc delivery; nix-vault does not do it.
-* **Cleanup is best effort.** The session is removed after normal exit, startup failure and
-  handled signals (SIGINT, SIGTERM, SIGHUP). After SIGKILL, a crash or power loss the 0700
-  directory with 0600 files can remain; nix-vault does not delete directories from earlier runs.
-  On macOS session files live under `$TMPDIR` on disk; on Linux under `$XDG_RUNTIME_DIR` (tmpfs).
-* **Copies of your own entries.** Session files hold copies of your existing netrc entries and
-  access tokens as well as the selected credentials, owner-only and removed on exit.
-* **Flags win.** Settings the command itself passes (`--option`, `--extra-...`) override the
-  session settings.
-* **Changing a profile.** Stored credentials are bound to the profile's type, host and OAuth client
-  id. Changing those asks for a new login; changing scopes or endpoints does not, so run
-  `login --force` after changing `scopes`.
-* `redirect_port` (authorization code flow only) fixes the loopback port of the browser redirect, for
-  providers that only accept pre-registered redirect URLs; register
-  `http://127.0.0.1:<port>/callback` there. By default a random free port is used.
-* Not provided: a general secrets manager, shell export/eval integration, printing secrets,
-  external credential providers, a background daemon, custom encrypted storage, remote token
-  revocation, `completions`.
+* **Client-side only.** Credentials reach Nix commands run by `exec`. Downloads performed by the
+  **Nix daemon** (multi-user installs, NixOS), fetches inside **sandboxed builds** and **remote
+  builders** are not covered in general.
+* **Cleanup is best effort** after SIGKILL, a crash or power loss.
+
+The full list is in [docs/limitations.md](docs/limitations.md).
 
 ## Development
 

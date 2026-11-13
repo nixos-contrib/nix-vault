@@ -192,6 +192,12 @@ headers = { cf-access-token = "{access_token}" }
 * **When it fails** (a non-zero exit, a timeout, an expired token, output that is not a token),
   `exec` stops before launching the command. The helper's own messages are above the error, which
   names the profile and the command and never shows the output.
+* **While the command runs.** The proxy asks for its headers on every request. When the token the
+  helper printed is within two minutes of its end, the helper is run again (without a terminal
+  input, so it cannot take what you type for the command). If that fails the token that is still
+  good keeps being used, and the helper is tried again after ten seconds; once the token has
+  expired the request is not forwarded: the proxy answers `401` with a message that names the
+  profile. A token with no known expiry is kept for the whole command.
 * **`login` and `logout`** have nothing to do for this type, and `list` does not run the command.
 * **The config file is code.** Whoever can write it chooses what runs as you, so nix-vault refuses
   a configuration file that other users can write when it has a process profile

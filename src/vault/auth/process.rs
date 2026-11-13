@@ -26,15 +26,17 @@ const TIMEOUT: Duration = Duration::from_secs(60);
 /// The most output that is read. A token is a few kilobytes at most.
 const MAX_OUTPUT: usize = 64 * 1024;
 
-/// Runs the profile's command and returns the credential it printed.
-pub fn acquire(profile: &Profile) -> Result<Credential> {
+/// Runs the profile's command and returns the credential it printed. With `interactive` the
+/// command shares the terminal's input and can prompt. Without it (while another command is
+/// running) its input is empty, so it cannot take what the user types for that command.
+pub fn acquire(profile: &Profile, interactive: bool) -> Result<Credential> {
     let Kind::Process(process) = &profile.kind else {
         return Err(Error::usage(format!(
             "profile \"{}\" is not a process profile",
             profile.name
         )));
     };
-    let output = run(profile, process)?;
+    let output = run(profile, process, interactive)?;
     parse(
         profile,
         process.command_output,
@@ -50,10 +52,14 @@ fn failure(profile: &Profile, what: &str) -> Error {
     ))
 }
 
-fn run(profile: &Profile, process: &Process) -> Result<Vec<u8>> {
+fn run(profile: &Profile, process: &Process, interactive: bool) -> Result<Vec<u8>> {
     let mut child = Command::new(&process.command[0])
         .args(&process.command[1..])
-        .stdin(Stdio::inherit())
+        .stdin(if interactive {
+            Stdio::inherit()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()

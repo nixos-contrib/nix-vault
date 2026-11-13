@@ -242,3 +242,41 @@ fn process_profiles_are_validated() {
         "\"command\" belongs in [a.process]",
     );
 }
+
+#[test]
+fn a_token_that_ends_during_the_command_is_asked_for_again_by_the_proxy() {
+    // The first run prints a token that ends in 123 seconds (usable at the start, since the
+    // refresh margin is 120); every later run prints one that lasts. Dates work on macOS and GNU.
+    let ws = workspace(
+        "json",
+        r#"d=$(dirname "$0"); n=$(cat "$d/runs" 2>/dev/null | wc -l | tr -d ' '); echo run >> "$d/runs"
+if [ "$n" = 0 ]; then
+  exp=$(date -u -v+123S +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '+123 seconds' +%Y-%m-%dT%H:%M:%SZ)
+else
+  exp=2100-01-01T00:00:00Z
+fi
+echo "{\"access_token\":\"fake-run-$n\",\"expires_at\":\"$exp\"}""#,
+    );
+    let output = ws
+        .cmd()
+        .args([
+            "exec",
+            "-p",
+            "svc",
+            "--",
+            "sh",
+            "-c",
+            "sleep 5; curl -s -o /dev/null -w '%{http_code}\\n' \"$NIX_VAULT_PROXY_SVC/nix-cache-info\"",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    // The helper ran at the start and again when the request found the token near its end, and
+    // the request was forwarded (502: the upstream does not resolve) instead of refused
+    let runs = std::fs::read_to_string(ws.path().join("runs")).unwrap();
+    assert_eq!(runs.lines().count(), 2, "{runs}");
+    assert!(stdout.trim_end().ends_with("502"), "{stdout}");
+    assert!(!stdout.contains("fake-run-"));
+}

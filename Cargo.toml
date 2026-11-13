@@ -44,5 +44,5 @@ zbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust"] 
 
 [dev-dependencies]
 assert_cmd = "2"
-expectrl = "0.7"
+expectrl = "0.9"
 predicates = "3"

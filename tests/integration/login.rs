@@ -1,17 +1,17 @@
 //! `login` for basic profiles. The prompts need a terminal, so these run in a pty.
 
-use expectrl::{Eof, Session};
+use expectrl::{session::OsSession, Eof, Expect, Session};
 use predicates::prelude::*;
 
 use crate::helpers::*;
 
-fn start(ws: &Workspace, args: &[&str]) -> Session {
+fn start(ws: &Workspace, args: &[&str]) -> OsSession {
     let mut cmd = ws.std_cmd();
     cmd.arg("login").args(args);
     Session::spawn(cmd).unwrap()
 }
 
-fn finish(mut session: Session) -> String {
+fn finish(mut session: OsSession) -> String {
     let captured = session.expect(Eof).unwrap();
     String::from_utf8_lossy(captured.as_bytes()).into_owned()
 }

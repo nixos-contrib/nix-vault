@@ -156,7 +156,7 @@ fn identical_credentials_for_the_same_host_are_merged() {
 #[test]
 fn different_credentials_conflict_even_across_mechanisms() {
     let config = format!(
-        "{CONFIG}\n[mirror]\nhost = \"cache.example.com\"\ntype = \"basic\"\n[mirror.access-token]\n"
+        "{CONFIG}\n[mirror]\nhost = \"cache.example.com\"\ntype = \"basic\"\n[mirror.nix]\nuse = [\"access-token\"]\n"
     );
     let ws = Workspace::new(&config);
     ws.seed_cache();

@@ -20,7 +20,7 @@ fn valid_file_with_every_profile_shape_lists() {
     let config = format!(
         "{CONFIG}\n[work]\nhost = \"github.com\"\ntype = \"oauth2\"\n[work.oauth2]\nclient_id = \"c\"\n\
          flow = \"authorization_code\"\nauthorization_endpoint = \"https://github.com/a\"\n\
-         token_endpoint = \"https://github.com/t\"\n[work.access-token]\n[work.netrc]\n"
+         token_endpoint = \"https://github.com/t\"\n[work.nix]\nuse = [\"access-token\", \"netrc\"]\n"
     );
     let ws = Workspace::new(&config);
     ws.cmd()
@@ -72,28 +72,33 @@ fn rejects_bad_hosts_endpoints_and_style() {
         "\"token_endpoint\" must use https",
     );
     fails_with(
-        &format!("{BASIC}[a.access-token]\nstyle = \"bitbucket\"\n"),
-        "\"style\" must be \"plain\" or \"typed\" in [a.access-token]",
+        &format!("{BASIC}[a.nix]\nuse = [\"access-token\"]\naccess-token-style = \"bitbucket\"\n"),
+        "\"access-token-style\" must be \"plain\" or \"typed\" in [a.nix]",
     );
     fails_with(
-        &format!("{BASIC}style = \"plain\"\n"),
-        "in [a.access-token]",
+        &format!("{BASIC}access-token-style = \"plain\"\n"),
+        "\"access-token-style\" belongs in [a.nix]",
+    );
+    fails_with(
+        &format!("{BASIC}[a.nix]\nuse = []\n"),
+        "\"use\" must be a non-empty list",
+    );
+    fails_with(
+        &format!("{BASIC}[a.netrc]\n"),
+        "[a.netrc] was replaced by [a.nix]",
     );
 }
 
 #[test]
-fn rejects_netrc_keys_and_oauth_keys_on_basic() {
-    for profile in [
-        format!("{BASIC}[a.netrc]\nusername = \"u\"\n"),
-        format!("{BASIC}[a.netrc]\nlogin = \"u\"\n"),
-    ] {
-        let key = if profile.contains("username") {
-            "username"
-        } else {
-            "login"
-        };
-        fails_with(&profile, &format!("profile \"a\": unknown key \"{key}\""));
-    }
+fn rejects_nix_table_keys_and_oauth_keys_on_basic() {
+    fails_with(
+        &format!("{BASIC}[a.nix]\nusername = \"u\"\n"),
+        "\"username\" must not be stored in the configuration file",
+    );
+    fails_with(
+        &format!("{BASIC}[a.nix]\nlogin = \"u\"\n"),
+        "profile \"a\": unknown key \"login\"",
+    );
     fails_with(
         &format!("{BASIC}client_id = \"c\"\n"),
         "\"client_id\" belongs in [a.oauth2]",

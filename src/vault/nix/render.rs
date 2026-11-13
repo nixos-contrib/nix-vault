@@ -135,14 +135,18 @@ mod tests {
             "tok-1"
         );
         // An explicit style wins over the host default
-        let c = config("[b.access-token]\nstyle=\"typed\"", "", "github.com");
+        let c = config(
+            "[b.nix]\nuse=[\"access-token\"]\naccess-token-style=\"typed\"",
+            "",
+            "github.com",
+        );
         let b = &c.profiles[0];
         assert_eq!(
             access_token_entry(b, &basic_cred(b)).unwrap().1.expose(),
             "PAT:pat-1"
         );
         let c = config(
-            "[b.access-token]\nstyle=\"plain\"",
+            "[b.nix]\nuse=[\"access-token\"]\naccess-token-style=\"plain\"",
             "",
             "gitlab.example.com",
         );
@@ -155,7 +159,7 @@ mod tests {
 
     #[test]
     fn netrc_entries_use_the_right_login() {
-        let c = config("", "[o.netrc]", "h.example");
+        let c = config("", "[o.nix]\nuse=[\"netrc\"]", "h.example");
         let (b, o) = (&c.profiles[0], &c.profiles[1]);
         let e = netrc_entry(b, &basic_cred(b)).unwrap();
         assert_eq!((e.login.as_str(), e.password.expose()), ("alice", "pat-1"));

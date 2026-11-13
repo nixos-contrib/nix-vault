@@ -30,7 +30,9 @@ fn real_nix_sees_the_merged_access_tokens_through_the_include() {
         eprintln!("skipped: nix is not installed");
         return;
     }
-    let ws = workspace("[hub]\nhost = \"github.com\"\ntype = \"basic\"\n[hub.access-token]\n");
+    let ws = workspace(
+        "[hub]\nhost = \"github.com\"\ntype = \"basic\"\n[hub.nix]\nuse = [\"access-token\"]\n",
+    );
     ws.seed_basic(
         "hub",
         &identity("basic", "github.com", None),

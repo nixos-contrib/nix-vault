@@ -23,7 +23,7 @@ const SECRET_KEYS: [&str; 6] = [
     "username",
 ];
 /// Keys valid for every profile.
-const COMMON_KEYS: [&str; 4] = ["host", "type", "access-token", "netrc"];
+const COMMON_KEYS: [&str; 3] = ["host", "type", "nix"];
 /// Keys valid inside `[<name>.oauth2]`.
 const OAUTH_KEYS: [&str; 6] = [
     "client_id",
@@ -96,9 +96,9 @@ pub struct Profile {
     pub host: String,
     /// Authentication type and its settings.
     pub kind: Kind,
-    /// `[<name>.access-token]` present: the optional `style`.
+    /// Access-token delivery was chosen in `[<name>.nix]`: the optional `access-token-style`.
     pub access_token: Option<Option<Style>>,
-    /// `[<name>.netrc]` present: also (or only) deliver through netrc. The table has no keys.
+    /// Netrc delivery was chosen in `[<name>.nix]`.
     pub netrc: bool,
 }
 
@@ -267,8 +267,15 @@ fn unknown_key(profile: &str, key: &str) -> Error {
 
 fn style_error(profile: &str) -> Error {
     Error::config(format!(
-        "profile \"{profile}\": \"style\" must be \"plain\" or \"typed\" in \
-         [{profile}.access-token]"
+        "profile \"{profile}\": \"access-token-style\" must be \"plain\" or \"typed\" in \
+         [{profile}.nix]"
+    ))
+}
+
+fn use_error(profile: &str) -> Error {
+    Error::config(format!(
+        "profile \"{profile}\": \"use\" must be a non-empty list without repeats of \
+         \"access-token\" and \"netrc\" in [{profile}.nix]"
     ))
 }
 
@@ -327,8 +334,31 @@ fn parse_profile(name: &str, table: &toml::Table) -> Result<Profile> {
         if SECRET_KEYS.contains(&key) {
             return Err(secret_error(name, key));
         }
-        if key == "style" {
-            return Err(style_error(name));
+        match key {
+            "access-token" => {
+                return Err(Error::config(format!(
+                    "profile \"{name}\": [{name}.access-token] was replaced by [{name}.nix] \
+                     (use = [\"access-token\"], access-token-style = \"plain\" or \"typed\")"
+                )))
+            }
+            "netrc" => {
+                return Err(Error::config(format!(
+                    "profile \"{name}\": [{name}.netrc] was replaced by [{name}.nix] \
+                     (use = [\"netrc\"])"
+                )))
+            }
+            "style" => {
+                return Err(Error::config(format!(
+                    "profile \"{name}\": \"style\" was renamed to \"access-token-style\" in \
+                     [{name}.nix]"
+                )))
+            }
+            "use" | "access-token-style" => {
+                return Err(Error::config(format!(
+                    "profile \"{name}\": \"{key}\" belongs in [{name}.nix]"
+                )))
+            }
+            _ => {}
         }
     }
 
@@ -384,16 +414,9 @@ fn parse_profile(name: &str, table: &toml::Table) -> Result<Profile> {
         Kind::Basic
     };
 
-    let access_token = match table.get("access-token") {
-        None => None,
-        Some(value) => Some(parse_access_token(name, value)?),
-    };
-    let netrc = match table.get("netrc") {
-        None => false,
-        Some(value) => {
-            parse_netrc(name, value)?;
-            true
-        }
+    let (access_token, netrc) = match table.get("nix") {
+        None => (None, false),
+        Some(value) => parse_nix(name, value, is_oauth)?,
     };
 
     Ok(Profile {
@@ -495,16 +518,41 @@ fn parse_oauth(name: &str, table: &toml::Table) -> Result<OAuth> {
     })
 }
 
-fn parse_access_token(name: &str, value: &toml::Value) -> Result<Option<Style>> {
+/// Parses `[<name>.nix]`: how the credential reaches Nix. `use` lists the mechanisms (default:
+/// access token for oauth2 profiles, netrc for basic ones) and `access-token-style` renders the
+/// access token. Returns the access-token choice (with its optional style) and the netrc choice.
+fn parse_nix(
+    name: &str,
+    value: &toml::Value,
+    is_oauth: bool,
+) -> Result<(Option<Option<Style>>, bool)> {
     let Some(table) = value.as_table() else {
         return Err(Error::config(format!(
-            "profile \"{name}\": \"access-token\" must be a table"
+            "profile \"{name}\": \"nix\" must be a table"
         )));
     };
+    let mut uses: Option<(bool, bool)> = None;
     let mut style = None;
     for (key, value) in table {
         match key.as_str() {
-            "style" => {
+            "use" => {
+                let Some(items) = value.as_array().filter(|a| !a.is_empty()) else {
+                    return Err(use_error(name));
+                };
+                let (mut token, mut netrc) = (false, false);
+                for item in items {
+                    let seen = match item.as_str() {
+                        Some("access-token") => &mut token,
+                        Some("netrc") => &mut netrc,
+                        _ => return Err(use_error(name)),
+                    };
+                    if std::mem::replace(seen, true) {
+                        return Err(use_error(name));
+                    }
+                }
+                uses = Some((token, netrc));
+            }
+            "access-token-style" => {
                 style = Some(match value.as_str() {
                     Some("plain") => Style::Plain,
                     Some("typed") => Style::Typed,
@@ -512,7 +560,7 @@ fn parse_access_token(name: &str, value: &toml::Value) -> Result<Option<Style>> 
                         let new = if old == "github" { "plain" } else { "typed" };
                         return Err(Error::config(format!(
                             "profile \"{name}\": style \"{old}\" was renamed to \"{new}\" in \
-                             [{name}.access-token]"
+                             [{name}.nix]"
                         )));
                     }
                     _ => return Err(style_error(name)),
@@ -522,24 +570,18 @@ fn parse_access_token(name: &str, value: &toml::Value) -> Result<Option<Style>> 
             k => return Err(unknown_key(name, k)),
         }
     }
-    Ok(style)
-}
-
-fn parse_netrc(name: &str, value: &toml::Value) -> Result<()> {
-    let Some(table) = value.as_table() else {
+    let (token, netrc) = uses.unwrap_or(if is_oauth {
+        (true, false)
+    } else {
+        (false, true)
+    });
+    if style.is_some() && !token {
         return Err(Error::config(format!(
-            "profile \"{name}\": \"netrc\" must be a table"
+            "profile \"{name}\": \"access-token-style\" needs \"access-token\" in \"use\" in \
+             [{name}.nix]"
         )));
-    };
-    // The table only selects the mechanism: the login is the stored username (basic) or `oauth2`
-    if let Some(key) = table.keys().next() {
-        return Err(match key.as_str() {
-            "style" => style_error(name),
-            k if k != "username" && SECRET_KEYS.contains(&k) => secret_error(name, k),
-            k => unknown_key(name, k),
-        });
     }
-    Ok(())
+    Ok((token.then_some(style), netrc))
 }
 
 /// Returns the configuration file path: `explicit`, else `$XDG_CONFIG_HOME/nix-vault/config.toml`,
@@ -610,10 +652,9 @@ device_authorization_endpoint = "https://gitlab.example.com/oauth/authorize_devi
 token_endpoint = "https://gitlab.example.com/oauth/token"
 scopes = ["read_api"]
 
-[company.access-token]
-style = "typed"
-
-[company.netrc]
+[company.nix]
+use = ["access-token", "netrc"]
+access-token-style = "typed"
 "#;
 
     fn error(text: &str) -> String {
@@ -724,19 +765,69 @@ style = "typed"
         );
         assert!(Config::parse(&loopback).is_ok());
         let style = GOOD.replace("\"typed\"", "\"bitbucket\"");
-        assert!(error(&style).contains("\"style\" must be \"plain\" or \"typed\""));
+        assert!(error(&style)
+            .contains("\"access-token-style\" must be \"plain\" or \"typed\" in [company.nix]"));
         let old = GOOD.replace("\"typed\"", "\"gitlab\"");
         assert!(error(&old).contains("style \"gitlab\" was renamed to \"typed\""));
         let old = GOOD.replace("\"typed\"", "\"github\"");
         assert!(error(&old).contains("style \"github\" was renamed to \"plain\""));
-        let outside = "[a]\nhost=\"h.example\"\ntype=\"basic\"\nstyle=\"plain\"\n";
-        assert!(error(outside).contains("in [a.access-token]"));
+        let outside = "[a]\nhost=\"h.example\"\ntype=\"basic\"\naccess-token-style=\"plain\"\n";
+        assert_eq!(
+            error(outside),
+            "profile \"a\": \"access-token-style\" belongs in [a.nix]"
+        );
+        let renamed = "[a]\nhost=\"h.example\"\ntype=\"basic\"\nstyle=\"plain\"\n";
+        assert!(error(renamed).contains("renamed to \"access-token-style\" in [a.nix]"));
+        let style_without_token = "[a]\nhost=\"h.example\"\ntype=\"basic\"\n[a.nix]\n\
+                                   access-token-style=\"plain\"\n";
+        assert!(error(style_without_token).contains("needs \"access-token\" in \"use\""));
     }
 
     #[test]
-    fn the_netrc_table_takes_no_keys() {
-        let user = "[a]\nhost=\"h.example\"\ntype=\"basic\"\n[a.netrc]\nusername=\"u\"\n";
-        assert_eq!(error(user), "profile \"a\": unknown key \"username\"");
+    fn the_nix_table_validates_use_and_rejects_the_old_tables() {
+        let nix =
+            |body: &str| format!("[a]\nhost=\"h.example\"\ntype=\"basic\"\n[a.nix]\n{body}\n");
+        for bad in [
+            "use = []",
+            "use = \"netrc\"",
+            "use = [\"ssh\"]",
+            "use = [\"netrc\", \"netrc\"]",
+        ] {
+            assert!(
+                error(&nix(bad)).contains("\"use\" must be a non-empty list"),
+                "{bad}"
+            );
+        }
+        let user = nix("username=\"u\"");
+        assert!(error(&user).contains("\"username\" must not be stored"));
+        let login = nix("login=\"u\"");
+        assert_eq!(error(&login), "profile \"a\": unknown key \"login\"");
+        // The tables of the earlier format name their replacement
+        let old = "[a]\nhost=\"h.example\"\ntype=\"basic\"\n[a.netrc]\n";
+        assert!(error(old).contains("[a.netrc] was replaced by [a.nix]"));
+        let old = "[a]\nhost=\"h.example\"\ntype=\"basic\"\n[a.access-token]\n";
+        assert!(error(old).contains("[a.access-token] was replaced by [a.nix]"));
+        // Without `use` the type decides; `use` and the style choose the mechanisms
+        let delivery = |t: &str, body: &str| {
+            let extra = if t == "oauth2" {
+                "[a.oauth2]\nclient_id=\"c\"\nflow=\"device\"\n\
+                 device_authorization_endpoint=\"https://h.example/d\"\n\
+                 token_endpoint=\"https://h.example/t\"\n"
+            } else {
+                ""
+            };
+            let text = format!("[a]\nhost=\"h.example\"\ntype=\"{t}\"\n{extra}[a.nix]\n{body}\n");
+            Config::parse(&text).unwrap().profiles[0].delivery()
+        };
+        assert!(delivery("basic", "").netrc && delivery("basic", "").access_token.is_none());
+        assert!(!delivery("oauth2", "").netrc && delivery("oauth2", "").access_token.is_some());
+        let both = delivery("basic", "use = [\"access-token\", \"netrc\"]");
+        assert!(both.netrc && both.access_token.is_some());
+        let token_only = delivery(
+            "basic",
+            "use = [\"access-token\"]\naccess-token-style = \"plain\"",
+        );
+        assert!(!token_only.netrc && token_only.access_token == Some(Style::Plain));
     }
 
     #[test]

@@ -6,8 +6,8 @@ use crate::helpers::*;
 fn one_exec_serves_a_forge_token_and_a_cache_login() {
     let config = "[forge]\nhost = \"gitlab.example.com\"\ntype = \"oauth2\"\n[forge.oauth2]\nclient_id = \"c\"\n\
                   flow = \"device\"\ndevice_authorization_endpoint = \"https://gitlab.example.com/d\"\n\
-                  token_endpoint = \"https://gitlab.example.com/t\"\n[forge.access-token]\n\
-                  style = \"typed\"\n\
+                  token_endpoint = \"https://gitlab.example.com/t\"\n[forge.nix]\n\
+                  use = [\"access-token\"]\naccess-token-style = \"typed\"\n\
                   [cache]\nhost = \"cache.example.com\"\ntype = \"basic\"\n";
     let ws = Workspace::new(config);
     ws.seed_oauth(
@@ -58,7 +58,7 @@ fn one_exec_serves_a_forge_token_and_a_cache_login() {
 
 #[test]
 fn the_same_host_through_both_mechanisms_with_different_accounts_is_rejected() {
-    let config = "[forge]\nhost = \"git.example.com\"\ntype = \"basic\"\n[forge.access-token]\n\
+    let config = "[forge]\nhost = \"git.example.com\"\ntype = \"basic\"\n[forge.nix]\nuse = [\"access-token\"]\n\
                   [mirror]\nhost = \"git.example.com\"\ntype = \"basic\"\n";
     let ws = Workspace::new(config);
     let id = identity("basic", "git.example.com", None);

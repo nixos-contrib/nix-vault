@@ -4,7 +4,8 @@
 # `oauth2`. A profile has up to three kinds of sub-table:
 #   - the sub-table named after its type holds the authentication settings (`[<profile>.oauth2]`;
 #     basic profiles have none, they are asked for a username and password at login);
-#   - `[<profile>.access-token]` and `[<profile>.netrc]` choose how credentials reach Nix.
+#   - `[<profile>.nix]` chooses how credentials reach Nix: `use` lists the mechanisms
+#     (`"access-token"`, `"netrc"` or both) and `access-token-style` renders the access token.
 # The file never holds usernames, passwords or tokens: `nix-vault login` asks for them and keeps
 # them in the system keychain. Endpoint values below are illustrative; they must match the real
 # service.
@@ -52,11 +53,12 @@ flow = "device"
 device_authorization_endpoint = "https://git.example.com/oauth/authorize_device"
 token_endpoint = "https://git.example.com/oauth/token"
 
-[mono.access-token]
-style = "typed"        # "plain" renders host=<token> (github.com, Gitea, Forgejo, ...);
-                       # "typed" renders host=OAuth2:<token> (host=PAT:<token> for basic
-                       # profiles), which is what GitLab expects. Default: plain for github.com,
-                       # typed for every other host.
-
-[mono.netrc]           # also present it through netrc; takes no keys. The login is the username
-                       # given at login (basic profiles) or "oauth2" (OAuth profiles).
+[mono.nix]
+use = ["access-token", "netrc"]   # default: ["access-token"] for oauth2, ["netrc"] for basic.
+                                  # The netrc login is the username given at login (basic
+                                  # profiles) or "oauth2" (OAuth profiles).
+access-token-style = "typed"      # "plain" renders host=<token> (github.com, Gitea, Forgejo, ...);
+                                  # "typed" renders host=OAuth2:<token> (host=PAT:<token> for
+                                  # basic profiles), which is what GitLab expects. Default: plain
+                                  # for github.com, typed for every other host. Only valid when
+                                  # "use" includes "access-token".

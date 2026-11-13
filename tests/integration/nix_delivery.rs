@@ -99,8 +99,8 @@ fn an_unreadable_user_netrc_is_skipped_with_a_warning_naming_the_file() {
 #[test]
 fn access_tokens_are_merged_with_the_selected_profile_winning() {
     let config = format!(
-        "{CONFIG}\n[hub]\nhost = \"github.com\"\ntype = \"basic\"\n[hub.access-token]\n\
-         [lab]\nhost = \"gitlab.example.com\"\ntype = \"basic\"\n[lab.access-token]\n"
+        "{CONFIG}\n[hub]\nhost = \"github.com\"\ntype = \"basic\"\n[hub.nix]\nuse = [\"access-token\"]\n\
+         [lab]\nhost = \"gitlab.example.com\"\ntype = \"basic\"\n[lab.nix]\nuse = [\"access-token\"]\n"
     );
     let ws = Workspace::new(&config);
     ws.seed_basic(
@@ -146,7 +146,7 @@ fn access_tokens_are_merged_with_the_selected_profile_winning() {
 #[test]
 fn style_can_be_set_and_both_mechanisms_can_be_used_together() {
     let config = "[both]\nhost = \"git.example.com\"\ntype = \"basic\"\n\
-                  [both.access-token]\nstyle = \"plain\"\n[both.netrc]\n";
+                  [both.nix]\nuse = [\"access-token\", \"netrc\"]\naccess-token-style = \"plain\"\n";
     let ws = Workspace::new(config);
     ws.seed_basic(
         "both",
@@ -162,7 +162,7 @@ fn style_can_be_set_and_both_mechanisms_can_be_used_together() {
 
 #[test]
 fn oauth_netrc_uses_the_fixed_oauth2_username() {
-    let ws = Workspace::new(&format!("{CONFIG}\n[company.netrc]\n"));
+    let ws = Workspace::new(&format!("{CONFIG}\n[company.nix]\nuse = [\"netrc\"]\n"));
     ws.seed_oauth("company", &company_identity(), FAKE_TOKEN, None, None);
     let (stdout, _) = run(&ws, &["company"]);
     assert!(

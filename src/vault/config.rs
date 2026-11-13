@@ -80,6 +80,9 @@ pub struct OAuth {
     pub token_endpoint: String,
     /// Requested scopes.
     pub scopes: Vec<String>,
+    /// Fixed loopback port for the browser redirect (flow `authorization_code`); a random free
+    /// port when absent. Needed by providers that only accept pre-registered redirect URLs.
+    pub redirect_port: Option<u16>,
 }
 
 /// The authentication type of a profile.
@@ -360,6 +363,7 @@ struct RawOAuth {
     token_endpoint: String,
     #[serde(default)]
     scopes: Vec<String>,
+    redirect_port: Option<u16>,
 }
 
 #[derive(Deserialize)]
@@ -613,6 +617,18 @@ fn validate_oauth(name: &str, o: RawOAuth) -> Result<OAuth> {
             "\"scopes\" items must be non-empty strings without whitespace".into(),
         ));
     }
+    if let Some(port) = o.redirect_port {
+        if !matches!(o.flow, Flow::AuthorizationCode) {
+            return Err(config(
+                "\"redirect_port\" is only valid for flow \"authorization_code\"".into(),
+            ));
+        }
+        if port < 1024 {
+            return Err(config(
+                "\"redirect_port\" must be between 1024 and 65535".into(),
+            ));
+        }
+    }
     Ok(OAuth {
         client_id: o.client_id,
         flow: o.flow,
@@ -620,6 +636,7 @@ fn validate_oauth(name: &str, o: RawOAuth) -> Result<OAuth> {
         authorization_endpoint: o.authorization_endpoint,
         token_endpoint: o.token_endpoint,
         scopes: o.scopes,
+        redirect_port: o.redirect_port,
     })
 }
 
@@ -938,5 +955,39 @@ access_token_prefix = "by_type"
         let message = error("[a]\nhost = \"h.example\ntoken = \"SECRET-VALUE\"\n");
         assert!(message.contains("invalid configuration file"));
         assert!(!message.contains("SECRET-VALUE"));
+    }
+    fn code_profile(extra: &str) -> String {
+        format!(
+            "[sts]\nhost = \"sts.example.com\"\ntype = \"oauth2\"\n[sts.oauth2]\nclient_id = \"c\"\n\
+             flow = \"authorization_code\"\nauthorization_endpoint = \"https://idp.example.com/a\"\n\
+             token_endpoint = \"https://idp.example.com/t\"\n{extra}\n"
+        )
+    }
+
+    #[test]
+    fn redirect_port_is_optional_and_kept() {
+        let config = Config::parse(&code_profile("redirect_port = 8251")).unwrap();
+        let Kind::OAuth2(oauth) = &config.profile("sts").unwrap().kind else {
+            panic!("not oauth2")
+        };
+        assert_eq!(oauth.redirect_port, Some(8251));
+        let config = Config::parse(&code_profile("")).unwrap();
+        let Kind::OAuth2(oauth) = &config.profile("sts").unwrap().kind else {
+            panic!("not oauth2")
+        };
+        assert_eq!(oauth.redirect_port, None);
+    }
+
+    #[test]
+    fn redirect_port_is_validated() {
+        assert!(error(&code_profile("redirect_port = 80"))
+            .contains("\"redirect_port\" must be between 1024 and 65535"));
+        assert!(Config::parse(&code_profile("redirect_port = 70000")).is_err());
+        let device = GOOD.replace(
+            "scopes = [\"read_api\"]",
+            "scopes = [\"read_api\"]\nredirect_port = 8251",
+        );
+        assert!(error(&device)
+            .contains("\"redirect_port\" is only valid for flow \"authorization_code\""));
     }
 }

@@ -157,6 +157,9 @@ arguments or the environment.
 * **Changing a profile.** Stored credentials are bound to the profile's type, host and OAuth client
   id. Changing those asks for a new login; changing scopes or endpoints does not, so run
   `login --force` after changing `scopes`.
+* `redirect_port` (authorization code flow only) fixes the loopback port of the browser redirect, for
+  providers that only accept pre-registered redirect URLs; register
+  `http://127.0.0.1:<port>/callback` there. By default a random free port is used.
 * Not provided: a general secrets manager, shell export/eval integration, printing secrets,
   external credential providers, a background daemon, custom encrypted storage, remote token
   revocation, `completions`.

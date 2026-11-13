@@ -20,15 +20,24 @@ use crate::vault::{
 /// How long to wait for the browser to come back.
 pub const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// Runs the flow: prints the authorization URL, waits for the redirect on a random loopback
-/// port, checks `state`, and exchanges the code with the PKCE verifier.
+/// Runs the flow: prints the authorization URL, waits for the redirect on a loopback port (the
+/// profile's `redirect_port`, else a random free one), checks `state`, and exchanges the code with the PKCE verifier.
 pub fn login(profile: &str, oauth: &OAuth) -> Result<TokenSet> {
     let endpoint = oauth
         .authorization_endpoint
         .clone()
         .ok_or_else(|| Error::Auth("the profile has no authorization_endpoint".into()))?;
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .map_err(|e| Error::io("cannot listen for the browser redirect", e))?;
+    let wanted = oauth.redirect_port.unwrap_or(0);
+    let listener = TcpListener::bind(("127.0.0.1", wanted)).map_err(|e| {
+        if wanted == 0 {
+            Error::io("cannot listen for the browser redirect", e)
+        } else {
+            Error::io(
+                &format!("cannot listen on port {wanted} for the browser redirect (is it in use?)"),
+                e,
+            )
+        }
+    })?;
     let port = listener
         .local_addr()
         .map_err(|e| Error::io("cannot listen for the browser redirect", e))?

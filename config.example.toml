@@ -40,6 +40,9 @@ flow = "authorization_code"
 authorization_endpoint = "https://github.com/login/oauth/authorize"
 token_endpoint = "https://github.com/login/oauth/access_token"
 scopes = ["repo"]
+# redirect_port = 8251   # a fixed loopback port for the browser redirect (default: a random free
+#                        # one). Set it when the provider only accepts pre-registered redirect
+#                        # URLs, and register http://127.0.0.1:8251/callback there.
 
 # One profile presented through both mechanisms: as an access token (for Nix's forge fetchers)
 # and through netrc (for HTTP downloads and caches on the same host).

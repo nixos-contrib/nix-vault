@@ -251,6 +251,45 @@ fn authorization_code_flow_uses_pkce_and_stores_the_tokens() {
 }
 
 #[test]
+fn a_configured_redirect_port_is_used_for_the_redirect() {
+    let provider = code_provider();
+    // A free port, found by binding and releasing it
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let config = oauth_config(&provider.base(), "authorization_code")
+        .replace("scopes = ", &format!("redirect_port = {port}\nscopes = "));
+    let ws = Workspace::new(&config);
+    let (mut child, url, _stderr) = start_code_login(&ws);
+
+    let query = url.split_once('?').unwrap().1;
+    let redirect = field(query, "redirect_uri").unwrap();
+    assert_eq!(redirect, format!("http://127.0.0.1:{port}/callback"));
+    let state = field(query, "state").unwrap();
+    visit(&format!("{redirect}?code=AUTH_CODE_1&state={state}"));
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
+fn a_redirect_port_in_use_fails_with_a_clear_message() {
+    let provider = code_provider();
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = taken.local_addr().unwrap().port();
+    let config = oauth_config(&provider.base(), "authorization_code")
+        .replace("scopes = ", &format!("redirect_port = {port}\nscopes = "));
+    let ws = Workspace::new(&config);
+    ws.cmd()
+        .args(["login", "-p", "company"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(format!(
+            "cannot listen on port {port}"
+        )));
+}
+
+#[test]
 fn a_wrong_state_is_rejected_and_nothing_is_stored() {
     let provider = code_provider();
     let ws = Workspace::new(&oauth_config(&provider.base(), "authorization_code"));

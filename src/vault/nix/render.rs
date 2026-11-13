@@ -52,6 +52,8 @@ pub fn access_token_entry(profile: &Profile, credential: &Credential) -> Result<
         )));
     }
     let rendered = match (profile.prefix(), &profile.kind) {
+        // A process profile is delivered through the proxy only
+        (_, Kind::Process(_)) => return Err(mismatch(profile)),
         (Prefix::Bare, _) => token.to_string(),
         (Prefix::ByType, Kind::OAuth2(_)) => format!("OAuth2:{token}"),
         (Prefix::ByType, Kind::Basic) => format!("PAT:{token}"),
@@ -64,11 +66,11 @@ pub fn access_token_entry(profile: &Profile, credential: &Credential) -> Result<
 /// `{access_token}` for oauth2 profiles.
 pub fn proxy_headers(profile: &Profile, credential: &Credential) -> Result<Vec<(String, Secret)>> {
     let values: Vec<(&str, &str)> = match (&profile.kind, &credential.basic, &credential.oauth2) {
-        (Kind::Basic, Some(basic), None) => vec![
+        (Kind::Basic | Kind::Process(_), Some(basic), None) => vec![
             ("{username}", basic.username.expose()),
             ("{password}", basic.password.expose()),
         ],
-        (Kind::OAuth2(_), None, Some(oauth)) => {
+        (Kind::OAuth2(_) | Kind::Process(_), None, Some(oauth)) => {
             vec![("{access_token}", oauth.access_token.expose())]
         }
         _ => return Err(mismatch(profile)),

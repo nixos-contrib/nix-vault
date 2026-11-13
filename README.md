@@ -155,6 +155,42 @@ host is added when you do not list it. Your other substituters are kept.
   five minutes) fails the requests after that. Headers the client sends that the proxy does not
   replace are passed on untouched.
 
+### Credentials from a command
+
+A `process` profile gets its credential from a helper command, in the manner of AWS's
+`credential_process`. Nothing is stored by nix-vault: `exec` runs the command each time, so the tool
+that owns the login stays in charge of it.
+
+```toml
+[team-cache]
+host = "nix.example.com"
+type = "process"
+
+[team-cache.process]
+command = ["cloudflared", "access", "token", "https://nix.example.com"]
+command_output_format = "text"      # the default
+
+[team-cache.proxy]
+headers = { cf-access-token = "{access_token}" }
+```
+
+* **The command** is an array: the program and its arguments, run without a shell. Its stderr and
+  stdin are your terminal's, so it can say what to do (`cloudflared` says to run its login) and can
+  prompt. It has 60 seconds and may print up to 64 KiB.
+* **`command_output_format`** is `text` (default): the output, trimmed, must be one token, which is
+  `{access_token}`; if it is a JWT, its `exp` is the expiry. Or `json`: `{"access_token": "...",
+  "expires_at": "..."}`, or `username` and `password`, with `expires_at` optional.
+* **Delivery** is the proxy, implied for this type, so `[<profile>.proxy]` is required and
+  `[<profile>.nix]` may be left out (or `use = ["proxy"]`). `{username}` and `{password}` are
+  available with `json`.
+* **When it fails** (a non-zero exit, a timeout, an expired token, output that is not a token),
+  `exec` stops before launching the command. The helper's own messages are above the error, which
+  names the profile and the command and never shows the output.
+* **`login` and `logout`** have nothing to do for this type, and `list` does not run the command.
+* **The config file is code.** Whoever can write it chooses what runs as you, so nix-vault refuses
+  a configuration file that other users can write when it has a process profile
+  (`chmod go-w <file>`).
+
 ## Commands
 
 ```text

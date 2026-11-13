@@ -100,3 +100,22 @@ use = ["proxy"]
 
 [oidc-cache.proxy]
 headers = { Authorization = "Bearer {access_token}" }
+
+# A credential printed by a helper command, in the manner of AWS's credential_process. Nothing is
+# stored by nix-vault: `exec` runs the command each time, so the tool that owns the login (here
+# cloudflared) stays in charge of it. The command is an array run without a shell; its stderr and
+# stdin are your terminal's, so it can say what to do (for cloudflared: log in) and can prompt.
+# nix-vault refuses a config file that others can write when it has process profiles.
+[team-cache]
+host = "nix.example.com"
+type = "process"
+
+[team-cache.process]
+command = ["cloudflared", "access", "token", "https://nix.example.com"]
+command_output_format = "text"    # default: the trimmed output is the token. A JWT's "exp" is
+                                  # its expiry. "json" reads {"access_token": "...",
+                                  # "expires_at": "..."} (or "username" and "password").
+
+# Delivery is the proxy, implied for this type; the table below is required.
+[team-cache.proxy]
+headers = { cf-access-token = "{access_token}" }

@@ -63,6 +63,13 @@ impl LoginCommand {
                     )?,
                 }
             }
+            Kind::Process(_) => writeln!(
+                self.writer,
+                "Profile {} gets its credential from a command each time it is used; there is \
+                 nothing to log in to here. Log in with that command's own tool, then run \
+                 nix-vault exec.",
+                profile.name
+            )?,
             Kind::OAuth2(_) => {
                 match auth::login_oauth(profile, &self.store, &args.parent.state_dir, args.force)? {
                     LoginOutcome::Stored => writeln!(
@@ -101,6 +108,15 @@ impl LogoutCommand {
     /// Execute the LogoutCommand with the provided arguments.
     pub fn execute(&mut self, args: &LogoutCommandArgs) -> Result<()> {
         let profile = self.config.profile(&args.profile)?;
+        if matches!(profile.kind, Kind::Process(_)) {
+            writeln!(
+                self.writer,
+                "Profile {} stores no credentials: it gets them from a command. Nothing was \
+                 removed.",
+                profile.name
+            )?;
+            return Ok(());
+        }
         if self.store.remove(&profile.name)? {
             writeln!(
                 self.writer,
@@ -141,6 +157,17 @@ impl ListCommand {
             "EXPIRES".to_string(),
         ]];
         for profile in &self.config.profiles {
+            if matches!(profile.kind, Kind::Process(_)) {
+                // Running the command to find out would be a side effect of a listing
+                rows.push([
+                    profile.name.clone(),
+                    profile.host.clone(),
+                    profile.type_name().to_string(),
+                    "from a command".to_string(),
+                    "-".to_string(),
+                ]);
+                continue;
+            }
             let stored = self.store.load(&profile.name)?;
             let state = auth::state(profile, stored.as_ref(), self.now);
             let refreshable = stored
@@ -225,6 +252,15 @@ impl ExecCommand {
         let mut credentials: Vec<(&Profile, Credential)> = Vec::new();
         let mut problems: Vec<Error> = Vec::new();
         for profile in &selected {
+            if matches!(profile.kind, Kind::Process(_)) {
+                // Not stored: the command is asked each time. Its own messages are on the
+                // terminal, so a failure here is reported once, by name
+                match auth::process::acquire(profile) {
+                    Ok(credential) => credentials.push((profile, credential)),
+                    Err(e) => problems.push(e),
+                }
+                continue;
+            }
             let stored = self.store.load(&profile.name)?;
             match auth::state(profile, stored.as_ref(), now) {
                 CredentialState::Usable => credentials.push((profile, stored.expect("usable"))),

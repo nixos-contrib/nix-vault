@@ -85,6 +85,28 @@ pub struct OAuth {
     pub redirect_port: Option<u16>,
 }
 
+/// How the output of a `process` profile's command is read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+pub enum CommandOutput {
+    /// The whole output, trimmed, is the credential.
+    #[default]
+    #[serde(rename = "text")]
+    Text,
+    /// The output is a JSON document with `access_token`, or `username` and `password`, and an
+    /// optional `expires_at`.
+    #[serde(rename = "json")]
+    Json,
+}
+
+/// The helper command of a `process` profile.
+#[derive(Clone, Debug)]
+pub struct Process {
+    /// The command and its arguments. It is run directly, without a shell.
+    pub command: Vec<String>,
+    /// How its output is read.
+    pub command_output: CommandOutput,
+}
+
 /// The authentication type of a profile.
 #[derive(Clone, Debug)]
 pub enum Kind {
@@ -92,6 +114,8 @@ pub enum Kind {
     Basic,
     /// OAuth 2.0 tokens.
     OAuth2(OAuth),
+    /// A credential printed by a helper command each time it is needed.
+    Process(Process),
 }
 
 /// A named profile: one host and one authentication type.
@@ -131,6 +155,7 @@ impl Profile {
         match self.kind {
             Kind::Basic => "basic",
             Kind::OAuth2(_) => "oauth2",
+            Kind::Process(_) => "process",
         }
     }
 
@@ -160,7 +185,7 @@ impl Profile {
                     netrc: false,
                     proxy: false,
                 },
-                Kind::Basic => Delivery {
+                Kind::Basic | Kind::Process(_) => Delivery {
                     access_token: None,
                     netrc: true,
                     proxy: false,
@@ -220,7 +245,9 @@ impl Config {
                 )))
             }
         };
-        Config::parse(&text)
+        let config = Config::parse(&text)?;
+        config.check_writable_by_others(path)?;
+        Ok(config)
     }
 
     /// Parses and validates configuration text.
@@ -253,6 +280,27 @@ impl Config {
             profiles.push(parse_profile(name, profile_table)?);
         }
         Ok(Config { profiles })
+    }
+
+    /// Refuses a configuration file that other users can write when it holds process profiles:
+    /// whoever can edit it could choose the commands that run as you.
+    fn check_writable_by_others(&self, path: &Path) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        if !self
+            .profiles
+            .iter()
+            .any(|p| matches!(p.kind, Kind::Process(_)))
+        {
+            return Ok(());
+        }
+        match std::fs::metadata(path) {
+            Ok(meta) if meta.permissions().mode() & 0o022 != 0 => Err(Error::config(format!(
+                "{} has process profiles and can be written by other users; run: chmod go-w {}",
+                path.display(),
+                path.display()
+            ))),
+            _ => Ok(()),
+        }
     }
 
     /// Returns the profile called `name`.
@@ -367,9 +415,29 @@ struct RawOAuth2Profile {
     _type: String,
 }
 
+/// What the TOML file may hold for a `process` profile.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawProcessProfile {
+    host: String,
+    process: RawProcess,
+    nix: Option<RawNix>,
+    proxy: Option<RawProxy>,
+    #[serde(rename = "type")]
+    _type: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawProcess {
+    command: Vec<String>,
+    command_output_format: Option<CommandOutput>,
+}
+
 enum RawProfile {
     Basic(RawBasic),
     OAuth2(RawOAuth2Profile),
+    Process(RawProcessProfile),
 }
 
 #[derive(Deserialize)]
@@ -435,10 +503,13 @@ fn precheck(name: &str, table: &toml::Table) -> Result<()> {
             k if OAUTH_KEYS.contains(&k) => {
                 return Err(moved(format!("\"{k}\" belongs in [{name}.oauth2]")))
             }
+            "command" | "command_output_format" => {
+                return Err(moved(format!("\"{key}\" belongs in [{name}.process]")))
+            }
             _ => {}
         }
     }
-    for section in ["oauth2", "nix", "proxy"] {
+    for section in ["oauth2", "nix", "proxy", "process"] {
         let Some(toml::Value::Table(inner)) = table.get(section) else {
             continue;
         };
@@ -466,6 +537,9 @@ fn shape_error(name: &str, path: &str, message: &str, table: &toml::Table) -> Er
     if message.starts_with("missing field `oauth2`") {
         return config(format!("missing required table [{name}.oauth2]"));
     }
+    if message.starts_with("missing field `process`") {
+        return config(format!("missing required table [{name}.process]"));
+    }
     if let Some(key) = quoted("missing field `") {
         return config(format!("missing required key \"{key}\""));
     }
@@ -473,10 +547,19 @@ fn shape_error(name: &str, path: &str, message: &str, table: &toml::Table) -> Er
         if key == "oauth2" {
             return config("\"oauth2\" is only valid for oauth2 profiles".into());
         }
+        if key == "process" {
+            return config("[process] is only valid for process profiles".into());
+        }
         return unknown_key(name, &key);
     }
     match path {
         "oauth2.flow" => config("\"flow\" must be \"device\" or \"authorization_code\"".into()),
+        "process.command_output_format" => {
+            config("\"command_output_format\" must be \"text\" or \"json\"".into())
+        }
+        p if p.starts_with("process.command") => {
+            config("\"command\" must be an array of strings".into())
+        }
         "nix.access_token_prefix" => {
             let old = table
                 .get("nix")
@@ -533,6 +616,9 @@ fn parse_profile(name: &str, table: &toml::Table) -> Result<Profile> {
         Some("oauth2") => {
             RawProfile::OAuth2(serde_path_to_error::deserialize(value()).map_err(fail)?)
         }
+        Some("process") => {
+            RawProfile::Process(serde_path_to_error::deserialize(value()).map_err(fail)?)
+        }
         None => {
             return Err(Error::config(format!(
                 "profile \"{name}\": missing required key \"type\""
@@ -540,7 +626,7 @@ fn parse_profile(name: &str, table: &toml::Table) -> Result<Profile> {
         }
         Some(_) => {
             return Err(Error::config(format!(
-                "profile \"{name}\": \"type\" must be \"basic\" or \"oauth2\""
+                "profile \"{name}\": \"type\" must be \"basic\", \"oauth2\" or \"process\""
             )))
         }
     };
@@ -560,12 +646,15 @@ fn nonempty(name: &str, key: &str, value: &str) -> Result<()> {
 fn validate(name: &str, raw: RawProfile) -> Result<Profile> {
     let config = |text: String| Error::config(format!("profile \"{name}\": {text}"));
     // The type decides the default delivery: (access token, netrc)
-    let is_basic = matches!(raw, RawProfile::Basic(_));
-    let placeholders: &[&str] = if is_basic {
-        &["{username}", "{password}"]
-    } else {
-        &["{access_token}"]
+    let placeholders: &[&str] = match &raw {
+        RawProfile::Basic(_) => &["{username}", "{password}"],
+        RawProfile::OAuth2(_) => &["{access_token}"],
+        RawProfile::Process(p) if p.process.command_output_format == Some(CommandOutput::Json) => {
+            &["{access_token}", "{username}", "{password}"]
+        }
+        RawProfile::Process(_) => &["{access_token}"],
     };
+    let is_process = matches!(raw, RawProfile::Process(_));
     let (host, kind, nix, proxy_table, default) = match raw {
         RawProfile::Basic(b) => (b.host, Kind::Basic, b.nix, b.proxy, (false, true)),
         RawProfile::OAuth2(o) => (
@@ -575,10 +664,36 @@ fn validate(name: &str, raw: RawProfile) -> Result<Profile> {
             o.proxy,
             (true, false),
         ),
+        RawProfile::Process(p) => (
+            p.host,
+            Kind::Process(validate_process(name, p.process)?),
+            p.nix,
+            p.proxy,
+            (false, false),
+        ),
     };
     let host = parse_host(name, &host)?;
 
+    // A process profile has no stored credential to hand over as a netrc or access-token entry:
+    // proxy is its only delivery, and it is implied
+    if is_process {
+        if let Some(nix) = &nix {
+            let only_proxy = nix.r#use.as_deref() == Some(&[Mechanism::Proxy][..]);
+            if nix.r#use.is_some() && !only_proxy {
+                return Err(config(format!(
+                    "a process profile is delivered through the proxy only: \"use\" must be \
+                     [\"proxy\"] in [{name}.nix], or leave [{name}.nix] out"
+                )));
+            }
+            if nix.access_token_prefix.is_some() {
+                return Err(config(format!(
+                    "\"access_token_prefix\" needs \"access-token\" in \"use\" in [{name}.nix]"
+                )));
+            }
+        }
+    }
     let (access_token, netrc, proxy) = match nix {
+        _ if is_process => (None, false, true),
         None => (None, false, false),
         Some(nix) => {
             let mut proxy = false;
@@ -713,6 +828,32 @@ fn validate_headers(
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect())
+}
+
+/// Checks the helper command of a process profile.
+fn validate_process(name: &str, p: RawProcess) -> Result<Process> {
+    let config = |text: String| Error::config(format!("profile \"{name}\": {text}"));
+    if p.command.is_empty() || p.command.iter().any(|a| a.is_empty() || a.contains('\0')) {
+        return Err(config(
+            "\"command\" must be a non-empty array of non-empty strings".into(),
+        ));
+    }
+    // `command = ["cloudflared access token"]` is a shell line: it would look for a program with
+    // that exact name
+    if p.command.len() == 1
+        && p.command[0].contains(char::is_whitespace)
+        && !p.command[0].starts_with('/')
+    {
+        return Err(config(
+            "\"command\" is an array of the program and its arguments, run without a shell: \
+             write [\"program\", \"argument\", ...]"
+                .into(),
+        ));
+    }
+    Ok(Process {
+        command: p.command,
+        command_output: p.command_output_format.unwrap_or_default(),
+    })
 }
 
 fn validate_oauth(name: &str, o: RawOAuth) -> Result<OAuth> {

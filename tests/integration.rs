@@ -15,6 +15,7 @@ mod areas {
     pub mod nix_delivery;
     pub mod nix_gated;
     pub mod process;
+    pub mod process_profiles;
     pub mod profile_changes;
     pub mod proxy;
     pub mod redaction;

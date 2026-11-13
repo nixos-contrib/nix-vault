@@ -3,6 +3,7 @@
 pub mod basic;
 pub mod code;
 pub mod device;
+pub mod process;
 pub mod redact;
 pub mod token;
 

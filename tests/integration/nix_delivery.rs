@@ -144,9 +144,9 @@ fn access_tokens_are_merged_with_the_selected_profile_winning() {
 }
 
 #[test]
-fn style_can_be_set_and_both_mechanisms_can_be_used_together() {
+fn the_prefix_can_be_set_and_both_mechanisms_can_be_used_together() {
     let config = "[both]\nhost = \"git.example.com\"\ntype = \"basic\"\n\
-                  [both.nix]\nuse = [\"access-token\", \"netrc\"]\naccess_token_style = \"plain\"\n";
+                  [both.nix]\nuse = [\"access-token\", \"netrc\"]\naccess_token_prefix = \"none\"\n";
     let ws = Workspace::new(config);
     ws.seed_basic(
         "both",

@@ -48,7 +48,7 @@ fn changing_unrelated_settings_keeps_the_credentials() {
     for changed in [
         CONFIG.replace("oauth/token", "oauth/token2"),
         CONFIG.replace("[\"read_api\"]", "[\"read_api\", \"read_user\"]"),
-        format!("{CONFIG}\n[company.nix]\naccess_token_style = \"plain\"\n"),
+        format!("{CONFIG}\n[company.nix]\naccess_token_prefix = \"none\"\n"),
         format!("{CONFIG}\n[company.nix]\nuse = [\"netrc\"]\n"),
     ] {
         ws.set_config(&changed);

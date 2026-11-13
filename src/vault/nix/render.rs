@@ -2,7 +2,7 @@
 
 use crate::vault::{
     auth::redact::Secret,
-    config::{Kind, Profile, Style},
+    config::{Kind, Prefix, Profile},
     nix::netrc::Entry,
     store::Credential,
     Error, Result,
@@ -40,7 +40,7 @@ pub fn netrc_entry(profile: &Profile, credential: &Credential) -> Result<Entry> 
 }
 
 /// Returns the `access-tokens` entry (`host`, `value`) for `profile` using its style:
-/// `plain` renders the bare token, `typed` renders `OAuth2:<token>` (oauth2) or
+/// `none` renders the bare token, `by_type` renders `OAuth2:<token>` (oauth2) or
 /// `PAT:<token>` (basic).
 pub fn access_token_entry(profile: &Profile, credential: &Credential) -> Result<(String, Secret)> {
     let token = secret_of(profile, credential)?.expose();
@@ -51,10 +51,10 @@ pub fn access_token_entry(profile: &Profile, credential: &Credential) -> Result<
             profile.name
         )));
     }
-    let rendered = match (profile.style(), &profile.kind) {
-        (Style::Plain, _) => token.to_string(),
-        (Style::Typed, Kind::OAuth2(_)) => format!("OAuth2:{token}"),
-        (Style::Typed, Kind::Basic) => format!("PAT:{token}"),
+    let rendered = match (profile.prefix(), &profile.kind) {
+        (Prefix::Bare, _) => token.to_string(),
+        (Prefix::ByType, Kind::OAuth2(_)) => format!("OAuth2:{token}"),
+        (Prefix::ByType, Kind::Basic) => format!("PAT:{token}"),
     };
     Ok((profile.host.clone(), Secret::new(rendered)))
 }
@@ -109,7 +109,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_style_prefixes_by_type() {
+    fn by_type_prefix_depends_on_the_profile_type() {
         let c = config("", "", "gitlab.example.com");
         let (b, o) = (&c.profiles[0], &c.profiles[1]);
         assert_eq!(
@@ -123,7 +123,7 @@ mod tests {
     }
 
     #[test]
-    fn plain_style_is_the_bare_token_and_is_the_default_for_github_com() {
+    fn none_is_the_bare_token_and_the_default_for_github_com() {
         let c = config("", "", "github.com");
         let (b, o) = (&c.profiles[0], &c.profiles[1]);
         assert_eq!(
@@ -136,7 +136,7 @@ mod tests {
         );
         // An explicit style wins over the host default
         let c = config(
-            "[b.nix]\nuse=[\"access-token\"]\naccess_token_style=\"typed\"",
+            "[b.nix]\nuse=[\"access-token\"]\naccess_token_prefix=\"by_type\"",
             "",
             "github.com",
         );
@@ -146,7 +146,7 @@ mod tests {
             "PAT:pat-1"
         );
         let c = config(
-            "[b.nix]\nuse=[\"access-token\"]\naccess_token_style=\"plain\"",
+            "[b.nix]\nuse=[\"access-token\"]\naccess_token_prefix=\"none\"",
             "",
             "gitlab.example.com",
         );

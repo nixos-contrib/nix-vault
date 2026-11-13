@@ -65,3 +65,38 @@ access_token_prefix = "by_type"   # "none" renders host=<token> (github.com, Git
                                   # basic profiles), which is what GitLab expects. Default: none
                                   # for github.com, by_type for every other host. Only valid when
                                   # "use" includes "access-token".
+
+# A service behind Cloudflare Access, reached with a service token. Log in with the token's
+# client ID as the username and its secret as the password. nix-vault runs a local proxy for
+# the command that adds the headers below, and points Nix's substituters at it.
+[access-cache]
+host = "nix.example.com"
+type = "basic"
+
+[access-cache.nix]
+use = ["proxy"]                   # only for basic profiles; not combined with other mechanisms
+
+[access-cache.proxy]
+# The headers added to every request, as HTTP spells them. {username} and {password} stand for the
+# stored credential, so no secret is written here. Authorization, Cookie and Host cannot be set.
+headers = { CF-Access-Client-Id = "{username}", CF-Access-Client-Secret = "{password}" }
+
+# The same service, logged in through an OIDC provider instead of a service token, and the access
+# token sent as a bearer token. {access_token} is the placeholder for oauth2 profiles.
+[oidc-cache]
+host = "nix.example.com"
+type = "oauth2"
+
+[oidc-cache.oauth2]
+client_id = "your-oidc-client-id"
+flow = "authorization_code"
+authorization_endpoint = "https://idp.example.com/authorize"
+token_endpoint = "https://idp.example.com/token"
+scopes = ["openid", "email"]
+redirect_port = 8251              # register http://127.0.0.1:8251/callback at the provider
+
+[oidc-cache.nix]
+use = ["proxy"]
+
+[oidc-cache.proxy]
+headers = { Authorization = "Bearer {access_token}" }

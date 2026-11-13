@@ -23,6 +23,8 @@ pub struct Plan {
     pub access_tokens: Vec<(String, Secret)>,
     /// Selected netrc entries.
     pub netrc: Vec<netrc::Entry>,
+    /// The complete `substituters` list to set, when proxied profiles change it.
+    pub substituters: Option<Vec<String>>,
 }
 
 /// A private session directory. It is removed on `cleanup()` and on drop.
@@ -161,6 +163,10 @@ pub fn build(
         conf.push_str(&format!("access-tokens = {}\n", entries.join(" ")));
     }
 
+    if let Some(list) = &plan.substituters {
+        conf.push_str(&format!("substituters = {}\n", list.join(" ")));
+    }
+
     let conf_path = session.write_file("nix.conf", conf.as_bytes())?;
     Ok((session, conf_path))
 }
@@ -178,6 +184,7 @@ mod tests {
                 .map(|(h, t)| (h.to_string(), Secret::new(*t)))
                 .collect::<BTreeMap<_, _>>(),
             netrc_file: PathBuf::from("/none"),
+            substituters: Vec::new(),
         }
     }
 
@@ -191,6 +198,7 @@ mod tests {
                 login: "u".into(),
                 password: Secret::new("p"),
             }],
+            substituters: None,
         };
         let (mut session, conf) = build(
             base.path(),
@@ -256,6 +264,7 @@ mod tests {
                 login: "u".into(),
                 password: Secret::new("p"),
             }],
+            substituters: None,
         };
         let (_s, conf) = build(base.path(), &plan, &nix(&[("x", "y")]), b"").unwrap();
         assert!(!std::fs::read_to_string(conf)

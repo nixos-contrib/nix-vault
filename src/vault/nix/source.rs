@@ -7,6 +7,7 @@
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex, MutexGuard},
+    time::{Duration, Instant},
 };
 
 use crate::vault::{
@@ -69,6 +70,70 @@ impl HeaderSource for OAuthSource {
             *current = fresh.map_err(|e| format!("nix-vault: {e}"))?;
         }
         render::proxy_headers(&self.profile, &current).map_err(|e| format!("nix-vault: {e}"))
+    }
+}
+
+/// How long to wait before asking a command that just failed again, so a broken helper is not run
+/// for every request while the credential it printed is still good.
+const RETRY_AFTER_FAILURE: Duration = Duration::from_secs(10);
+
+struct ProcessState {
+    credential: Credential,
+    retry_at: Option<Instant>,
+}
+
+/// The headers of a process profile. The command is run again when the token it printed is within
+/// the refresh margin of its end. A token with no known expiry is kept for the whole command.
+pub struct ProcessSource {
+    profile: Profile,
+    state: Mutex<ProcessState>,
+}
+
+impl ProcessSource {
+    /// Starts from `credential`, which `exec` has just obtained from the command.
+    pub fn new(profile: Profile, credential: Credential) -> Self {
+        ProcessSource {
+            profile,
+            state: Mutex::new(ProcessState {
+                credential,
+                retry_at: None,
+            }),
+        }
+    }
+}
+
+impl HeaderSource for ProcessSource {
+    fn headers(&self) -> Result<Vec<(String, Secret)>, String> {
+        let mut state = lock(&self.state);
+        let now = time::OffsetDateTime::now_utc();
+        let expires_at = state.credential.oauth2.as_ref().and_then(|o| o.expires_at);
+        let due = expires_at.is_some_and(|t| t <= now + auth::REFRESH_MARGIN);
+        let may_retry = state.retry_at.is_none_or(|at| Instant::now() >= at);
+        if due && may_retry {
+            // Its input is empty: the command that is running owns the terminal now
+            match auth::process::acquire(&self.profile, false) {
+                Ok(fresh) => {
+                    state.credential = fresh;
+                    state.retry_at = None;
+                }
+                Err(e) => {
+                    state.retry_at = Some(Instant::now() + RETRY_AFTER_FAILURE);
+                    // The token it printed before may still be good for a little while
+                    if expires_at.is_some_and(|t| t <= now) {
+                        return Err(format!("nix-vault: {e}"));
+                    }
+                }
+            }
+        } else if due && expires_at.is_some_and(|t| t <= now) {
+            // Expired, and the last attempt failed a moment ago
+            return Err(format!(
+                "nix-vault: the credential of profile \"{}\" has expired and its command failed \
+                 a moment ago",
+                self.profile.name
+            ));
+        }
+        render::proxy_headers(&self.profile, &state.credential)
+            .map_err(|e| format!("nix-vault: {e}"))
     }
 }
 
@@ -301,5 +366,148 @@ mod tests {
         let message = source.headers().unwrap_err();
         assert!(message.contains("nix-vault login --profile p"), "{message}");
         assert_eq!(endpoint.requests.load(Ordering::SeqCst), 0);
+    }
+
+    /// A helper script that prints the contents of `token` (or fails when `fail` exists) and
+    /// counts its runs in `runs`.
+    struct Helper {
+        dir: tempfile::TempDir,
+    }
+
+    impl Helper {
+        fn new() -> Helper {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let script = dir.path().join("helper");
+            std::fs::write(
+                &script,
+                format!(
+                    "#!/bin/sh\necho run >> '{d}/runs'\n\
+                     if [ -f '{d}/fail' ]; then echo 'helper: log in again' >&2; exit 1; fi\n\
+                     cat '{d}/token'\n",
+                    d = dir.path().display()
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            Helper { dir }
+        }
+
+        fn prints(&self, token: &str, seconds_left: Option<i64>) {
+            let expires = seconds_left.map(|s| {
+                let at = OffsetDateTime::now_utc() + Duration::seconds(s);
+                format!(
+                    ",\"expires_at\":\"{}\"",
+                    at.format(&time::format_description::well_known::Rfc3339)
+                        .unwrap()
+                )
+            });
+            std::fs::write(
+                self.dir.path().join("token"),
+                format!(
+                    "{{\"access_token\":\"{token}\"{}}}",
+                    expires.unwrap_or_default()
+                ),
+            )
+            .unwrap();
+        }
+
+        fn fails(&self, on: bool) {
+            let marker = self.dir.path().join("fail");
+            if on {
+                std::fs::write(marker, "").unwrap();
+            } else {
+                let _ = std::fs::remove_file(marker);
+            }
+        }
+
+        fn runs(&self) -> usize {
+            std::fs::read_to_string(self.dir.path().join("runs"))
+                .map(|t| t.lines().count())
+                .unwrap_or(0)
+        }
+
+        fn profile(&self) -> Profile {
+            Config::parse(&format!(
+                "[p]\nhost=\"h.example\"\ntype=\"process\"\n[p.process]\ncommand=[\"{}/helper\"]\n\
+                 command_output_format=\"json\"\n[p.proxy]\n\
+                 headers = {{ Authorization = \"Bearer {{access_token}}\" }}\n",
+                self.dir.path().display()
+            ))
+            .unwrap()
+            .profiles
+            .remove(0)
+        }
+
+        /// The source, started the way `exec` starts it: from what the command printed first.
+        fn source(&self) -> ProcessSource {
+            let profile = self.profile();
+            let first = auth::process::acquire(&profile, false).unwrap();
+            ProcessSource::new(profile, first)
+        }
+    }
+
+    #[test]
+    fn a_token_with_time_left_is_not_asked_for_again() {
+        let helper = Helper::new();
+        helper.prints("tok-1", Some(3600));
+        let source = helper.source();
+        for _ in 0..3 {
+            assert_eq!(bearer(source.headers().unwrap()), "Bearer tok-1");
+        }
+        assert_eq!(helper.runs(), 1, "only the run at the start");
+    }
+
+    #[test]
+    fn a_token_near_its_end_is_asked_for_again_once() {
+        let helper = Helper::new();
+        helper.prints("tok-1", Some(30));
+        let source = helper.source();
+        helper.prints("tok-2", Some(3600));
+        assert_eq!(bearer(source.headers().unwrap()), "Bearer tok-2");
+        assert_eq!(bearer(source.headers().unwrap()), "Bearer tok-2");
+        assert_eq!(helper.runs(), 2);
+    }
+
+    #[test]
+    fn a_failing_command_keeps_the_token_that_is_still_good_and_is_not_run_for_every_request() {
+        let helper = Helper::new();
+        helper.prints("tok-1", Some(30));
+        let source = helper.source();
+        helper.fails(true);
+        for _ in 0..3 {
+            assert_eq!(bearer(source.headers().unwrap()), "Bearer tok-1");
+        }
+        // The start, and one failed attempt: not one per request
+        assert_eq!(helper.runs(), 2);
+    }
+
+    #[test]
+    fn an_expired_token_and_a_failing_command_is_an_error_without_the_token() {
+        let helper = Helper::new();
+        helper.prints("tok-1", Some(1));
+        let source = helper.source();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        helper.fails(true);
+        let message = source.headers().unwrap_err();
+        assert!(
+            message.starts_with("nix-vault: ") && message.contains("\"p\""),
+            "{message}"
+        );
+        assert!(!message.contains("tok-1"));
+        // Again, within the wait: still an error, and the command is not run again
+        let runs = helper.runs();
+        assert!(source.headers().unwrap_err().contains("has expired"));
+        assert_eq!(helper.runs(), runs);
+    }
+
+    #[test]
+    fn a_token_with_no_known_expiry_is_kept_for_the_whole_command() {
+        let helper = Helper::new();
+        helper.prints("tok-1", None);
+        let source = helper.source();
+        helper.prints("tok-2", None);
+        assert_eq!(bearer(source.headers().unwrap()), "Bearer tok-1");
+        assert_eq!(helper.runs(), 1);
     }
 }

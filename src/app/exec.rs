@@ -26,7 +26,10 @@ use crate::{
     vault::{
         auth::{self, basic::Prompt, CredentialState, LoginOutcome},
         config::{Config, Kind, Profile},
-        nix::{self, netrc, proxy, render, session, source::OAuthSource},
+        nix::{
+            self, netrc, proxy, render, session,
+            source::{OAuthSource, ProcessSource},
+        },
         store::{Credential, CredentialStore},
         Error, Result,
     },
@@ -263,7 +266,7 @@ impl ExecCommand {
             if matches!(profile.kind, Kind::Process(_)) {
                 // Not stored: the command is asked each time. Its own messages are on the
                 // terminal, so a failure here is reported once, by name
-                match auth::process::acquire(profile) {
+                match auth::process::acquire(profile, true) {
                     Ok(credential) => credentials.push((profile, credential)),
                     Err(e) => problems.push(e),
                 }
@@ -417,6 +420,10 @@ fn build_plan(
                     state_dir.to_path_buf(),
                     credential.clone(),
                 )),
+                // The command is run again when the token it printed is near its end
+                Kind::Process(_) => {
+                    Arc::new(ProcessSource::new((*profile).clone(), credential.clone()))
+                }
                 _ => Arc::new(proxy::StaticHeaders(headers)),
             };
             proxied

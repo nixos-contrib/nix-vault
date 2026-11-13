@@ -40,6 +40,10 @@
           # The tests need a writable HOME, loopback networking and the nix binary; CI runs them
           # with `cargo test --features file-store` instead.
           doCheck = false;
+          # Automatically ad-hoc signs binaries in $out/bin during fixup
+          nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
+            pkgs.darwin.autoSignDarwinBinariesHook
+          ];
           meta = with pkgs.lib; {
             inherit (manifest) description;
             inherit (manifest) homepage;

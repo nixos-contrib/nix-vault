@@ -1,6 +1,6 @@
 [package]
 name = "nix-vault"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Authenticate Nix against private services: store credentials in the system keychain and run commands with them available to Nix"
 license = "MIT"

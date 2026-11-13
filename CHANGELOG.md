@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0](https://github.com/nixos-contrib/nix-vault/compare/v0.1.0...v0.2.0) (2026-11-13)
+
+
+### Features
+
+* choose the Nix delivery in a [profile.nix] table ([efb1081](https://github.com/nixos-contrib/nix-vault/commit/efb10819ed3e1d001d727648cc79a1f46f3df250))
+* name the access token style key access_token_style ([43c7b5d](https://github.com/nixos-contrib/nix-vault/commit/43c7b5d0509d7ffd3ce9414a96597bb78dba8c0d))
+
 ## 0.1.0 (2026-11-13)
 
 

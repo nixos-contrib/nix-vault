@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/nixos-contrib/nix-vault/compare/v0.3.0...v0.4.0) (2026-11-13)
+
+
+### Features
+
+* add a local reverse proxy delivery for services that need custom headers ([#13](https://github.com/nixos-contrib/nix-vault/issues/13)) ([9f5af67](https://github.com/nixos-contrib/nix-vault/commit/9f5af674ec19c83949a8890bb53854a93b97092c))
+* add process profiles that get a credential from a helper command ([#15](https://github.com/nixos-contrib/nix-vault/issues/15)) ([f431faf](https://github.com/nixos-contrib/nix-vault/commit/f431faf22ffeed518d9cce7b74a5cab9aa7f2c38)), closes [#14](https://github.com/nixos-contrib/nix-vault/issues/14)
+* let authorization code profiles fix the redirect port ([#10](https://github.com/nixos-contrib/nix-vault/issues/10)) ([f5931e2](https://github.com/nixos-contrib/nix-vault/commit/f5931e2c371501e83ef00b88447ebf25d9219e6d))
+* read a basic profile's credentials from environment variables ([#18](https://github.com/nixos-contrib/nix-vault/issues/18)) ([d40eb6d](https://github.com/nixos-contrib/nix-vault/commit/d40eb6d832bc3a16f5625070ee155a9c30ab8702)), closes [#4](https://github.com/nixos-contrib/nix-vault/issues/4)
+* renew an oauth2 token while a command runs through the proxy ([#16](https://github.com/nixos-contrib/nix-vault/issues/16)) ([75c0a53](https://github.com/nixos-contrib/nix-vault/commit/75c0a5394df228600ac867e2f919d8cbadbd7eb5)), closes [#5](https://github.com/nixos-contrib/nix-vault/issues/5)
+* run a process profile's command again when its token nears its end ([#17](https://github.com/nixos-contrib/nix-vault/issues/17)) ([02c80e9](https://github.com/nixos-contrib/nix-vault/commit/02c80e90026b9ebb002a8c79af30552cefe07812)), closes [#14](https://github.com/nixos-contrib/nix-vault/issues/14)
+
 ## [0.3.0](https://github.com/nixos-contrib/nix-vault/compare/v0.2.0...v0.3.0) (2026-11-13)
 
 

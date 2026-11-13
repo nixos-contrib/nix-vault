@@ -40,12 +40,29 @@ const NOT_FORWARDED: [&str; 11] = [
     "content-length",
 ];
 
+/// Where the proxy gets the headers it adds. It is asked on every request, so a credential that
+/// expires during a long command can be renewed in between.
+pub trait HeaderSource: Send + Sync {
+    /// Returns the headers to add now, replacing any the client sent with the same name, or a
+    /// message for the client when there are none (it must not contain a secret).
+    fn headers(&self) -> std::result::Result<Vec<(String, Secret)>, String>;
+}
+
+/// Headers that never change: a service token.
+pub struct StaticHeaders(pub Vec<(String, Secret)>);
+
+impl HeaderSource for StaticHeaders {
+    fn headers(&self) -> std::result::Result<Vec<(String, Secret)>, String> {
+        Ok(self.0.clone())
+    }
+}
+
 /// What the proxy forwards to and what it adds.
 pub struct Target {
     /// Where requests go, without a trailing slash: `https://cache.example.com`.
     pub base: String,
-    /// Headers added to every request, replacing any the client sent with the same name.
-    pub headers: Vec<(String, Secret)>,
+    /// Where the headers added to every request come from.
+    pub source: Arc<dyn HeaderSource>,
 }
 
 /// A running proxy. It stops on `stop()` and on drop.
@@ -137,8 +154,8 @@ fn random_token() -> Result<String> {
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-fn text_response(status: u16, text: &'static str) -> Response<std::io::Cursor<Vec<u8>>> {
-    Response::from_string(text).with_status_code(StatusCode(status))
+fn text_response(status: u16, text: impl Into<String>) -> Response<std::io::Cursor<Vec<u8>>> {
+    Response::from_string(text.into()).with_status_code(StatusCode(status))
 }
 
 /// Returns the part of `url` after the secret prefix, or `None` when it is not under it.
@@ -166,12 +183,19 @@ fn handle(shared: &Shared, mut request: tiny_http::Request) {
         return;
     };
 
+    // Asked per request. When there is nothing to send the request is not forwarded: sending it
+    // without the credential, or with a stale one, would only be rejected upstream
+    let headers = match shared.target.source.headers() {
+        Ok(headers) => headers,
+        Err(message) => {
+            let _ = request.respond(text_response(401, message));
+            return;
+        }
+    };
     let mut builder = shared
         .client
         .request(method, format!("{}{path}", shared.target.base));
-    let injected: Vec<String> = shared
-        .target
-        .headers
+    let injected: Vec<String> = headers
         .iter()
         .map(|(name, _)| name.to_ascii_lowercase())
         .collect();
@@ -182,7 +206,7 @@ fn handle(shared: &Shared, mut request: tiny_http::Request) {
         }
         builder = builder.header(name, header.value.as_str());
     }
-    for (name, value) in &shared.target.headers {
+    for (name, value) in &headers {
         builder = builder.header(name.as_str(), value.expose());
     }
 
@@ -327,10 +351,10 @@ mod tests {
     fn proxy_to(upstream: &Upstream) -> Proxy {
         Proxy::start(Target {
             base: upstream.base.clone(),
-            headers: vec![
+            source: Arc::new(StaticHeaders(vec![
                 ("CF-Access-Client-Id".into(), Secret::new("id-1.access")),
                 ("CF-Access-Client-Secret".into(), Secret::new("secret-1")),
-            ],
+            ])),
         })
         .unwrap()
     }
@@ -435,7 +459,10 @@ mod tests {
         drop(free);
         let proxy = Proxy::start(Target {
             base,
-            headers: vec![("CF-Access-Client-Secret".into(), Secret::new("secret-1"))],
+            source: Arc::new(StaticHeaders(vec![(
+                "CF-Access-Client-Secret".into(),
+                Secret::new("secret-1"),
+            )])),
         })
         .unwrap();
         let response = client().get(format!("{}/x", proxy.url())).send().unwrap();
@@ -451,5 +478,84 @@ mod tests {
         let url = proxy.url().to_string();
         proxy.stop();
         assert!(client().get(format!("{url}/x")).send().is_err());
+    }
+
+    /// A source whose value changes on every call and that can be told to fail.
+    struct Counting {
+        calls: std::sync::atomic::AtomicUsize,
+        fail_from: usize,
+    }
+
+    impl HeaderSource for Counting {
+        fn headers(&self) -> std::result::Result<Vec<(String, Secret)>, String> {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            if n >= self.fail_from {
+                return Err(
+                    "nix-vault: the credentials cannot be renewed; run: nix-vault login -p x"
+                        .into(),
+                );
+            }
+            Ok(vec![(
+                "Authorization".into(),
+                Secret::new(format!("Bearer token-{n}")),
+            )])
+        }
+    }
+
+    #[test]
+    fn the_headers_are_asked_for_on_every_request() {
+        let upstream = Upstream::start();
+        let proxy = Proxy::start(Target {
+            base: upstream.base.clone(),
+            source: Arc::new(Counting {
+                calls: Default::default(),
+                fail_from: usize::MAX,
+            }),
+        })
+        .unwrap();
+        for _ in 0..3 {
+            client().get(format!("{}/x", proxy.url())).send().unwrap();
+        }
+        let seen = upstream.requests();
+        let tokens: Vec<&str> = seen
+            .iter()
+            .map(|r| r.headers["authorization"].as_str())
+            .collect();
+        assert_eq!(
+            tokens,
+            ["Bearer token-1", "Bearer token-2", "Bearer token-3"]
+        );
+    }
+
+    #[test]
+    fn a_source_that_has_no_headers_answers_401_and_nothing_is_forwarded() {
+        let upstream = Upstream::start();
+        let proxy = Proxy::start(Target {
+            base: upstream.base.clone(),
+            source: Arc::new(Counting {
+                calls: Default::default(),
+                fail_from: 2,
+            }),
+        })
+        .unwrap();
+        assert_eq!(
+            client()
+                .get(format!("{}/a", proxy.url()))
+                .send()
+                .unwrap()
+                .status(),
+            200
+        );
+        let refused = client().get(format!("{}/b", proxy.url())).send().unwrap();
+        assert_eq!(refused.status(), 401);
+        assert!(refused
+            .text()
+            .unwrap()
+            .contains("run: nix-vault login -p x"));
+        assert_eq!(
+            upstream.requests().len(),
+            1,
+            "the second request must not reach the upstream"
+        );
     }
 }

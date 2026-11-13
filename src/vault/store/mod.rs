@@ -20,7 +20,7 @@ pub const SERVICE: &str = "nix-vault";
 const SCHEMA: u32 = 1;
 
 /// A place that keeps secret values by account name.
-pub trait SecretStore {
+pub trait SecretStore: Send {
     /// Returns the value stored for `account`, or `None`.
     fn get(&self, account: &str) -> Result<Option<Secret>>;
     /// Stores `value` for `account`, replacing any existing value.

@@ -136,7 +136,7 @@ mod tests {
         );
         // An explicit style wins over the host default
         let c = config(
-            "[b.nix]\nuse=[\"access-token\"]\naccess-token-style=\"typed\"",
+            "[b.nix]\nuse=[\"access-token\"]\naccess_token_style=\"typed\"",
             "",
             "github.com",
         );
@@ -146,7 +146,7 @@ mod tests {
             "PAT:pat-1"
         );
         let c = config(
-            "[b.nix]\nuse=[\"access-token\"]\naccess-token-style=\"plain\"",
+            "[b.nix]\nuse=[\"access-token\"]\naccess_token_style=\"plain\"",
             "",
             "gitlab.example.com",
         );

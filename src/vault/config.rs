@@ -96,7 +96,7 @@ pub struct Profile {
     pub host: String,
     /// Authentication type and its settings.
     pub kind: Kind,
-    /// Access-token delivery was chosen in `[<name>.nix]`: the optional `access-token-style`.
+    /// Access-token delivery was chosen in `[<name>.nix]`: the optional `access_token_style`.
     pub access_token: Option<Option<Style>>,
     /// Netrc delivery was chosen in `[<name>.nix]`.
     pub netrc: bool,
@@ -267,8 +267,15 @@ fn unknown_key(profile: &str, key: &str) -> Error {
 
 fn style_error(profile: &str) -> Error {
     Error::config(format!(
-        "profile \"{profile}\": \"access-token-style\" must be \"plain\" or \"typed\" in \
+        "profile \"{profile}\": \"access_token_style\" must be \"plain\" or \"typed\" in \
          [{profile}.nix]"
+    ))
+}
+
+fn renamed_style_key(profile: &str) -> Error {
+    Error::config(format!(
+        "profile \"{profile}\": \"access-token-style\" was renamed to \"access_token_style\" \
+         in [{profile}.nix] (keys use snake_case)"
     ))
 }
 
@@ -338,7 +345,7 @@ fn parse_profile(name: &str, table: &toml::Table) -> Result<Profile> {
             "access-token" => {
                 return Err(Error::config(format!(
                     "profile \"{name}\": [{name}.access-token] was replaced by [{name}.nix] \
-                     (use = [\"access-token\"], access-token-style = \"plain\" or \"typed\")"
+                     (use = [\"access-token\"], access_token_style = \"plain\" or \"typed\")"
                 )))
             }
             "netrc" => {
@@ -349,11 +356,14 @@ fn parse_profile(name: &str, table: &toml::Table) -> Result<Profile> {
             }
             "style" => {
                 return Err(Error::config(format!(
-                    "profile \"{name}\": \"style\" was renamed to \"access-token-style\" in \
+                    "profile \"{name}\": \"style\" was renamed to \"access_token_style\" in \
                      [{name}.nix]"
                 )))
             }
-            "use" | "access-token-style" => {
+            "access-token-style" => {
+                return Err(renamed_style_key(name));
+            }
+            "use" | "access_token_style" => {
                 return Err(Error::config(format!(
                     "profile \"{name}\": \"{key}\" belongs in [{name}.nix]"
                 )))
@@ -519,7 +529,7 @@ fn parse_oauth(name: &str, table: &toml::Table) -> Result<OAuth> {
 }
 
 /// Parses `[<name>.nix]`: how the credential reaches Nix. `use` lists the mechanisms (default:
-/// access token for oauth2 profiles, netrc for basic ones) and `access-token-style` renders the
+/// access token for oauth2 profiles, netrc for basic ones) and `access_token_style` renders the
 /// access token. Returns the access-token choice (with its optional style) and the netrc choice.
 fn parse_nix(
     name: &str,
@@ -552,7 +562,8 @@ fn parse_nix(
                 }
                 uses = Some((token, netrc));
             }
-            "access-token-style" => {
+            "access-token-style" => return Err(renamed_style_key(name)),
+            "access_token_style" => {
                 style = Some(match value.as_str() {
                     Some("plain") => Style::Plain,
                     Some("typed") => Style::Typed,
@@ -577,7 +588,7 @@ fn parse_nix(
     });
     if style.is_some() && !token {
         return Err(Error::config(format!(
-            "profile \"{name}\": \"access-token-style\" needs \"access-token\" in \"use\" in \
+            "profile \"{name}\": \"access_token_style\" needs \"access-token\" in \"use\" in \
              [{name}.nix]"
         )));
     }
@@ -654,7 +665,7 @@ scopes = ["read_api"]
 
 [company.nix]
 use = ["access-token", "netrc"]
-access-token-style = "typed"
+access_token_style = "typed"
 "#;
 
     fn error(text: &str) -> String {
@@ -766,20 +777,23 @@ access-token-style = "typed"
         assert!(Config::parse(&loopback).is_ok());
         let style = GOOD.replace("\"typed\"", "\"bitbucket\"");
         assert!(error(&style)
-            .contains("\"access-token-style\" must be \"plain\" or \"typed\" in [company.nix]"));
+            .contains("\"access_token_style\" must be \"plain\" or \"typed\" in [company.nix]"));
         let old = GOOD.replace("\"typed\"", "\"gitlab\"");
         assert!(error(&old).contains("style \"gitlab\" was renamed to \"typed\""));
         let old = GOOD.replace("\"typed\"", "\"github\"");
         assert!(error(&old).contains("style \"github\" was renamed to \"plain\""));
-        let outside = "[a]\nhost=\"h.example\"\ntype=\"basic\"\naccess-token-style=\"plain\"\n";
+        let outside = "[a]\nhost=\"h.example\"\ntype=\"basic\"\naccess_token_style=\"plain\"\n";
         assert_eq!(
             error(outside),
-            "profile \"a\": \"access-token-style\" belongs in [a.nix]"
+            "profile \"a\": \"access_token_style\" belongs in [a.nix]"
         );
+        let hyphen =
+            "[a]\nhost=\"h.example\"\ntype=\"basic\"\n[a.nix]\naccess-token-style=\"plain\"\n";
+        assert!(error(hyphen).contains("renamed to \"access_token_style\""));
         let renamed = "[a]\nhost=\"h.example\"\ntype=\"basic\"\nstyle=\"plain\"\n";
-        assert!(error(renamed).contains("renamed to \"access-token-style\" in [a.nix]"));
+        assert!(error(renamed).contains("renamed to \"access_token_style\" in [a.nix]"));
         let style_without_token = "[a]\nhost=\"h.example\"\ntype=\"basic\"\n[a.nix]\n\
-                                   access-token-style=\"plain\"\n";
+                                   access_token_style=\"plain\"\n";
         assert!(error(style_without_token).contains("needs \"access-token\" in \"use\""));
     }
 
@@ -825,7 +839,7 @@ access-token-style = "typed"
         assert!(both.netrc && both.access_token.is_some());
         let token_only = delivery(
             "basic",
-            "use = [\"access-token\"]\naccess-token-style = \"plain\"",
+            "use = [\"access-token\"]\naccess_token_style = \"plain\"",
         );
         assert!(!token_only.netrc && token_only.access_token == Some(Style::Plain));
     }

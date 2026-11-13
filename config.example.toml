@@ -5,7 +5,7 @@
 #   - the sub-table named after its type holds the authentication settings (`[<profile>.oauth2]`;
 #     basic profiles have none, they are asked for a username and password at login);
 #   - `[<profile>.nix]` chooses how credentials reach Nix: `use` lists the mechanisms
-#     (`"access-token"`, `"netrc"` or both) and `access-token-style` renders the access token.
+#     (`"access-token"`, `"netrc"` or both) and `access_token_style` renders the access token.
 # The file never holds usernames, passwords or tokens: `nix-vault login` asks for them and keeps
 # them in the system keychain. Endpoint values below are illustrative; they must match the real
 # service.
@@ -57,7 +57,7 @@ token_endpoint = "https://git.example.com/oauth/token"
 use = ["access-token", "netrc"]   # default: ["access-token"] for oauth2, ["netrc"] for basic.
                                   # The netrc login is the username given at login (basic
                                   # profiles) or "oauth2" (OAuth profiles).
-access-token-style = "typed"      # "plain" renders host=<token> (github.com, Gitea, Forgejo, ...);
+access_token_style = "typed"      # "plain" renders host=<token> (github.com, Gitea, Forgejo, ...);
                                   # "typed" renders host=OAuth2:<token> (host=PAT:<token> for
                                   # basic profiles), which is what GitLab expects. Default: plain
                                   # for github.com, typed for every other host. Only valid when

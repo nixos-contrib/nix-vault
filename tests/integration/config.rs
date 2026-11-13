@@ -74,10 +74,10 @@ fn rejects_bad_hosts_endpoints_and_style() {
     );
     fails_with(
         &format!("{BASIC}[a.access-token]\nstyle = \"bitbucket\"\n"),
-        "\"style\" must be \"github\" or \"gitlab\" in [a.access-token]",
+        "\"style\" must be \"plain\" or \"typed\" in [a.access-token]",
     );
     fails_with(
-        &format!("{BASIC}style = \"github\"\n"),
+        &format!("{BASIC}style = \"plain\"\n"),
         "in [a.access-token]",
     );
 }

@@ -43,9 +43,10 @@ device_authorization_endpoint = "https://git.example.com/oauth/authorize_device"
 token_endpoint = "https://git.example.com/oauth/token"
 
 [mono.access-token]
-style = "gitlab"       # "github" renders host=<token>; "gitlab" renders host=OAuth2:<token>
-                       # (host=PAT:<token> for basic profiles). Default: github for github.com,
-                       # gitlab for every other host.
+style = "typed"       # "plain" renders host=<token> (github.com, Gitea, Forgejo, ...);
+                       # "typed" renders host=OAuth2:<token> (host=PAT:<token> for basic
+                       # profiles), which is what GitLab expects. Default: plain for github.com,
+                       # typed for every other host.
 
 [mono.netrc]
 username = "oauth2"    # netrc login for OAuth profiles (default "oauth2")

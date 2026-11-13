@@ -40,7 +40,7 @@ pub fn netrc_entry(profile: &Profile, credential: &Credential) -> Result<Entry> 
 }
 
 /// Returns the `access-tokens` entry (`host`, `value`) for `profile` using its style:
-/// `github` renders the bare token, `gitlab` renders `OAuth2:<token>` (oauth2) or
+/// `plain` renders the bare token, `typed` renders `OAuth2:<token>` (oauth2) or
 /// `PAT:<token>` (basic).
 pub fn access_token_entry(profile: &Profile, credential: &Credential) -> Result<(String, Secret)> {
     let token = secret_of(profile, credential)?.expose();
@@ -52,9 +52,9 @@ pub fn access_token_entry(profile: &Profile, credential: &Credential) -> Result<
         )));
     }
     let rendered = match (profile.style(), &profile.kind) {
-        (Style::Github, _) => token.to_string(),
-        (Style::Gitlab, Kind::OAuth2(_)) => format!("OAuth2:{token}"),
-        (Style::Gitlab, Kind::Basic) => format!("PAT:{token}"),
+        (Style::Plain, _) => token.to_string(),
+        (Style::Typed, Kind::OAuth2(_)) => format!("OAuth2:{token}"),
+        (Style::Typed, Kind::Basic) => format!("PAT:{token}"),
     };
     Ok((profile.host.clone(), Secret::new(rendered)))
 }
@@ -109,7 +109,7 @@ mod tests {
     }
 
     #[test]
-    fn gitlab_style_prefixes_by_type() {
+    fn typed_style_prefixes_by_type() {
         let c = config("", "", "gitlab.example.com");
         let (b, o) = (&c.profiles[0], &c.profiles[1]);
         assert_eq!(
@@ -123,7 +123,7 @@ mod tests {
     }
 
     #[test]
-    fn github_style_is_the_bare_token_and_is_the_default_for_github_com() {
+    fn plain_style_is_the_bare_token_and_is_the_default_for_github_com() {
         let c = config("", "", "github.com");
         let (b, o) = (&c.profiles[0], &c.profiles[1]);
         assert_eq!(
@@ -135,14 +135,14 @@ mod tests {
             "tok-1"
         );
         // An explicit style wins over the host default
-        let c = config("[b.access-token]\nstyle=\"gitlab\"", "", "github.com");
+        let c = config("[b.access-token]\nstyle=\"typed\"", "", "github.com");
         let b = &c.profiles[0];
         assert_eq!(
             access_token_entry(b, &basic_cred(b)).unwrap().1.expose(),
             "PAT:pat-1"
         );
         let c = config(
-            "[b.access-token]\nstyle=\"github\"",
+            "[b.access-token]\nstyle=\"plain\"",
             "",
             "gitlab.example.com",
         );

@@ -38,9 +38,9 @@ const OAUTH_KEYS: [&str; 6] = [
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Style {
     /// `<host>=<token>`
-    Github,
-    /// `<host>=OAuth2:<token>` or `<host>=PAT:<token>`
-    Gitlab,
+    Plain,
+    /// `<host>=OAuth2:<token>` (oauth2) or `<host>=PAT:<token>` (basic)
+    Typed,
 }
 
 /// The OAuth flow used to log in.
@@ -120,13 +120,13 @@ impl Profile {
         }
     }
 
-    /// Returns the effective access-token style: the configured one, else `github` for the host
-    /// `github.com` and `gitlab` for every other host.
+    /// Returns the effective access-token style: the configured one, else `plain` for the host
+    /// `github.com` and `typed` for every other host.
     pub fn style(&self) -> Style {
         match self.access_token {
             Some(Some(style)) => style,
-            _ if self.host == "github.com" => Style::Github,
-            _ => Style::Gitlab,
+            _ if self.host == "github.com" => Style::Plain,
+            _ => Style::Typed,
         }
     }
 
@@ -275,7 +275,7 @@ fn unknown_key(profile: &str, key: &str) -> Error {
 
 fn style_error(profile: &str) -> Error {
     Error::config(format!(
-        "profile \"{profile}\": \"style\" must be \"github\" or \"gitlab\" in \
+        "profile \"{profile}\": \"style\" must be \"plain\" or \"typed\" in \
          [{profile}.access-token]"
     ))
 }
@@ -484,8 +484,15 @@ fn parse_access_token(name: &str, value: &toml::Value) -> Result<Option<Style>> 
         match key.as_str() {
             "style" => {
                 style = Some(match value.as_str() {
-                    Some("github") => Style::Github,
-                    Some("gitlab") => Style::Gitlab,
+                    Some("plain") => Style::Plain,
+                    Some("typed") => Style::Typed,
+                    Some(old @ ("github" | "gitlab")) => {
+                        let new = if old == "github" { "plain" } else { "typed" };
+                        return Err(Error::config(format!(
+                            "profile \"{name}\": style \"{old}\" was renamed to \"{new}\" in \
+                             [{name}.access-token]"
+                        )));
+                    }
                     _ => return Err(style_error(name)),
                 })
             }
@@ -587,7 +594,7 @@ token_endpoint = "https://gitlab.example.com/oauth/token"
 scopes = ["read_api"]
 
 [company.access-token]
-style = "gitlab"
+style = "typed"
 
 [company.netrc]
 username = "oauth2"
@@ -602,7 +609,7 @@ username = "oauth2"
         let config = Config::parse(GOOD).unwrap();
         assert_eq!(config.profiles.len(), 2);
         assert_eq!(config.profiles[0].host, "cache.example.com");
-        assert_eq!(config.profile("company").unwrap().style(), Style::Gitlab);
+        assert_eq!(config.profile("company").unwrap().style(), Style::Typed);
     }
 
     #[test]
@@ -625,7 +632,7 @@ username = "oauth2"
         assert_eq!(
             oauth.profiles[0].delivery(),
             Delivery {
-                access_token: Some(Style::Github),
+                access_token: Some(Style::Plain),
                 netrc: false
             }
         );
@@ -633,7 +640,7 @@ username = "oauth2"
         assert_eq!(
             both,
             Delivery {
-                access_token: Some(Style::Gitlab),
+                access_token: Some(Style::Typed),
                 netrc: true
             }
         );
@@ -662,7 +669,7 @@ username = "oauth2"
         // Flow details, scopes, style and the netrc username do not matter
         let relaxed = GOOD
             .replace("[\"read_api\"]", "[\"read_api\", \"read_user\"]")
-            .replace("\"gitlab\"", "\"github\"")
+            .replace("\"typed\"", "\"plain\"")
             .replace("username = \"oauth2\"", "username = \"someone\"")
             .replace("oauth/token", "oauth/token2");
         let id_relaxed = Config::parse(&relaxed)
@@ -701,9 +708,13 @@ username = "oauth2"
             "http://127.0.0.1:9/t",
         );
         assert!(Config::parse(&loopback).is_ok());
-        let style = GOOD.replace("\"gitlab\"", "\"bitbucket\"");
-        assert!(error(&style).contains("\"style\" must be \"github\" or \"gitlab\""));
-        let outside = "[a]\nhost=\"h.example\"\ntype=\"basic\"\nstyle=\"github\"\n";
+        let style = GOOD.replace("\"typed\"", "\"bitbucket\"");
+        assert!(error(&style).contains("\"style\" must be \"plain\" or \"typed\""));
+        let old = GOOD.replace("\"typed\"", "\"gitlab\"");
+        assert!(error(&old).contains("style \"gitlab\" was renamed to \"typed\""));
+        let old = GOOD.replace("\"typed\"", "\"github\"");
+        assert!(error(&old).contains("style \"github\" was renamed to \"plain\""));
+        let outside = "[a]\nhost=\"h.example\"\ntype=\"basic\"\nstyle=\"plain\"\n";
         assert!(error(outside).contains("in [a.access-token]"));
     }
 

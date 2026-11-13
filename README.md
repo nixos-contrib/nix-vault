@@ -1,5 +1,11 @@
 # nix-vault
 
+[![CI](https://github.com/nixos-contrib/nix-vault/actions/workflows/ci.yml/badge.svg)](https://github.com/nixos-contrib/nix-vault/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/nixos-contrib/nix-vault)](https://github.com/nixos-contrib/nix-vault/releases/latest)
+[![Rust](https://img.shields.io/badge/Rust-1.95-DEA584?logo=rust&logoColor=white)](rust-toolchain.toml)
+[![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux-lightgrey)](#install)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 Authenticate Nix against private services without keeping credentials in `nix.conf` or netrc
 files. nix-vault logs you in, keeps the credentials in your system keychain, and runs a command
 with them available to Nix for that command only. It is inspired by

@@ -161,6 +161,50 @@ host is added when you do not list it. Your other substituters are kept.
   service token (basic profile) does not expire during a run, so its headers never change. Headers
   the client sends that the proxy does not replace are passed on untouched.
 
+### Credentials from the environment (CI)
+
+A CI runner has no keychain. A basic profile can read its username and password from environment
+variables instead of a stored login, so the same profile file works locally and in CI:
+
+```toml
+[gitlab-ci]
+host = "cache.example.com"
+type = "basic"
+
+[gitlab-ci.basic]
+username_env = "NIX_CACHE_USERNAME"
+password_env = "NIX_CACHE_TOKEN"
+```
+
+```yaml
+build:
+  variables:
+    NIX_CACHE_USERNAME: "oauth2"          # the username your cache expects
+  id_tokens:
+    NIX_CACHE_TOKEN:
+      aud: https://cache.example.com
+  script:
+    - nix-vault exec --profile gitlab-ci -- nix build
+```
+
+* **Names, not values.** The variable names are not secrets, so they may be in the file; a literal
+  `username` or `password` is still refused. Both variables are required, and they must be
+  different.
+* **Read when `exec` starts.** A variable that is not set, or is empty, stops `exec` before the
+  command is launched, with a message that names the variable (never its value).
+* **Nothing is stored and no store is opened.** The credentials never touch disk except the
+  session netrc (mode 0600), and neither the keychain nor the encrypted file store is opened for
+  these profiles, so a runner without a keychain works.
+* **Delivery is as for any basic profile**: netrc by default, or `use = ["proxy"]` with
+  `{username}` and `{password}` in the headers.
+* **`login`, `logout` and `list`.** `login` says the credentials come from the environment and does
+  nothing, `logout` has nothing to remove, and `list` shows "environment" without reading the
+  variables.
+* **The variables stay in the command's environment.** They were put there by the CI job, and
+  removing them would surprise a command that needs them too; nix-vault does not copy them anywhere
+  else. Use a job-scoped variable, and a short-lived one where the CI offers it (GitLab's ID
+  tokens, for example), so a leaked value is worth little.
+
 ### Credentials from a command
 
 A `process` profile gets its credential from a helper command, in the manner of AWS's

@@ -107,6 +107,15 @@ pub struct Process {
     pub command_output: CommandOutput,
 }
 
+/// The names of the environment variables that hold a basic profile's credentials.
+#[derive(Clone, Debug)]
+pub struct EnvCredential {
+    /// The variable holding the username.
+    pub username_env: String,
+    /// The variable holding the password or token.
+    pub password_env: String,
+}
+
 /// The authentication type of a profile.
 #[derive(Clone, Debug)]
 pub enum Kind {
@@ -133,6 +142,9 @@ pub struct Profile {
     pub netrc: bool,
     /// Proxy delivery was chosen in `[<name>.nix]`: a local reverse proxy adds the credentials.
     pub proxy: bool,
+    /// The environment variables a basic profile reads its credentials from, instead of a stored
+    /// login (`[<name>.basic]`). Names only: the values are never in the file.
+    pub env: Option<EnvCredential>,
     /// The headers the proxy adds, from `[<name>.proxy]`: name and value template, where
     /// `{username}` and `{password}` stand for the stored credential. Empty without `proxy`.
     pub proxy_headers: Vec<(String, String)>,
@@ -398,6 +410,7 @@ struct RawBasic {
     host: String,
     nix: Option<RawNix>,
     proxy: Option<RawProxy>,
+    basic: Option<RawEnvBasic>,
     // `type` was read to pick this struct
     #[serde(rename = "type")]
     _type: String,
@@ -413,6 +426,13 @@ struct RawOAuth2Profile {
     proxy: Option<RawProxy>,
     #[serde(rename = "type")]
     _type: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawEnvBasic {
+    username_env: String,
+    password_env: String,
 }
 
 /// What the TOML file may hold for a `process` profile.
@@ -506,10 +526,13 @@ fn precheck(name: &str, table: &toml::Table) -> Result<()> {
             "command" | "command_output_format" => {
                 return Err(moved(format!("\"{key}\" belongs in [{name}.process]")))
             }
+            "username_env" | "password_env" => {
+                return Err(moved(format!("\"{key}\" belongs in [{name}.basic]")))
+            }
             _ => {}
         }
     }
-    for section in ["oauth2", "nix", "proxy", "process"] {
+    for section in ["oauth2", "nix", "proxy", "process", "basic"] {
         let Some(toml::Value::Table(inner)) = table.get(section) else {
             continue;
         };
@@ -549,6 +572,9 @@ fn shape_error(name: &str, path: &str, message: &str, table: &toml::Table) -> Er
         }
         if key == "process" {
             return config("[process] is only valid for process profiles".into());
+        }
+        if key == "basic" {
+            return config("[basic] is only valid for basic profiles".into());
         }
         return unknown_key(name, &key);
     }
@@ -655,8 +681,15 @@ fn validate(name: &str, raw: RawProfile) -> Result<Profile> {
         RawProfile::Process(_) => &["{access_token}"],
     };
     let is_process = matches!(raw, RawProfile::Process(_));
+    let mut env = None;
     let (host, kind, nix, proxy_table, default) = match raw {
-        RawProfile::Basic(b) => (b.host, Kind::Basic, b.nix, b.proxy, (false, true)),
+        RawProfile::Basic(b) => {
+            env = b
+                .basic
+                .map(|e| validate_env(name, e.username_env, e.password_env))
+                .transpose()?;
+            (b.host, Kind::Basic, b.nix, b.proxy, (false, true))
+        }
         RawProfile::OAuth2(o) => (
             o.host,
             Kind::OAuth2(validate_oauth(name, o.oauth2)?),
@@ -748,7 +781,40 @@ fn validate(name: &str, raw: RawProfile) -> Result<Profile> {
         access_token,
         netrc,
         proxy,
+        env,
         proxy_headers,
+    })
+}
+
+/// Checks the names of the variables a basic profile reads its credentials from. They are
+/// names, not secrets, so they may be in the file; a variable name is letters, digits and
+/// underscores, not starting with a digit.
+fn validate_env(name: &str, username_env: String, password_env: String) -> Result<EnvCredential> {
+    for (key, value) in [
+        ("username_env", &username_env),
+        ("password_env", &password_env),
+    ] {
+        let valid = value
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !valid {
+            return Err(Error::config(format!(
+                "profile \"{name}\": \"{key}\" must be the name of an environment variable \
+                 (letters, digits and underscores)"
+            )));
+        }
+    }
+    if username_env == password_env {
+        return Err(Error::config(format!(
+            "profile \"{name}\": \"username_env\" and \"password_env\" must be different \
+             variables"
+        )));
+    }
+    Ok(EnvCredential {
+        username_env,
+        password_env,
     })
 }
 

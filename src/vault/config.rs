@@ -98,8 +98,8 @@ pub struct Profile {
     pub kind: Kind,
     /// `[<name>.access-token]` present: the optional `style`.
     pub access_token: Option<Option<Style>>,
-    /// `[<name>.netrc]` present: the optional `username` (oauth2 only).
-    pub netrc: Option<Option<String>>,
+    /// `[<name>.netrc]` present: also (or only) deliver through netrc. The table has no keys.
+    pub netrc: bool,
 }
 
 /// The mechanisms through which a profile's credentials are presented to Nix.
@@ -132,7 +132,7 @@ impl Profile {
 
     /// Returns the mechanisms used for this profile (see FR-026).
     pub fn delivery(&self) -> Delivery {
-        if self.access_token.is_none() && self.netrc.is_none() {
+        if self.access_token.is_none() && !self.netrc {
             return match self.kind {
                 Kind::OAuth2(_) => Delivery {
                     access_token: Some(self.style()),
@@ -146,15 +146,7 @@ impl Profile {
         }
         Delivery {
             access_token: self.access_token.map(|_| self.style()),
-            netrc: self.netrc.is_some(),
-        }
-    }
-
-    /// Returns the netrc username for an oauth2 profile: the configured one, else `oauth2`.
-    pub fn oauth_netrc_username(&self) -> String {
-        match &self.netrc {
-            Some(Some(username)) => username.clone(),
-            _ => "oauth2".to_string(),
+            netrc: self.netrc,
         }
     }
 
@@ -379,8 +371,11 @@ fn parse_profile(name: &str, table: &toml::Table) -> Result<Profile> {
         Some(value) => Some(parse_access_token(name, value)?),
     };
     let netrc = match table.get("netrc") {
-        None => None,
-        Some(value) => Some(parse_netrc(name, value, is_oauth)?),
+        None => false,
+        Some(value) => {
+            parse_netrc(name, value)?;
+            true
+        }
     };
 
     Ok(Profile {
@@ -503,39 +498,21 @@ fn parse_access_token(name: &str, value: &toml::Value) -> Result<Option<Style>> 
     Ok(style)
 }
 
-fn parse_netrc(name: &str, value: &toml::Value, is_oauth: bool) -> Result<Option<String>> {
+fn parse_netrc(name: &str, value: &toml::Value) -> Result<()> {
     let Some(table) = value.as_table() else {
         return Err(Error::config(format!(
             "profile \"{name}\": \"netrc\" must be a table"
         )));
     };
-    let mut username = None;
-    for (key, value) in table {
-        match key.as_str() {
-            "username" => {
-                if !is_oauth {
-                    return Err(Error::config(format!(
-                        "profile \"{name}\": \"username\" is only valid for oauth2 profiles"
-                    )));
-                }
-                match value.as_str() {
-                    Some(u) if !u.is_empty() && !u.chars().any(char::is_whitespace) => {
-                        username = Some(u.to_string())
-                    }
-                    _ => {
-                        return Err(Error::config(format!(
-                            "profile \"{name}\": \"username\" must be a non-empty string \
-                             without whitespace"
-                        )))
-                    }
-                }
-            }
-            "style" => return Err(style_error(name)),
-            k if SECRET_KEYS.contains(&k) => return Err(secret_error(name, k)),
-            k => return Err(unknown_key(name, k)),
-        }
+    // The table only selects the mechanism: the login is the stored username (basic) or `oauth2`
+    if let Some(key) = table.keys().next() {
+        return Err(match key.as_str() {
+            "style" => style_error(name),
+            k if k != "username" && SECRET_KEYS.contains(&k) => secret_error(name, k),
+            k => unknown_key(name, k),
+        });
     }
-    Ok(username)
+    Ok(())
 }
 
 /// Returns the configuration file path: `explicit`, else `$XDG_CONFIG_HOME/nix-vault/config.toml`,
@@ -597,7 +574,6 @@ scopes = ["read_api"]
 style = "typed"
 
 [company.netrc]
-username = "oauth2"
 "#;
 
     fn error(text: &str) -> String {
@@ -666,11 +642,10 @@ username = "oauth2"
             .identity();
         assert_ne!(id, id_client);
 
-        // Flow details, scopes, style and the netrc username do not matter
+        // Flow details, scopes and style do not matter
         let relaxed = GOOD
             .replace("[\"read_api\"]", "[\"read_api\", \"read_user\"]")
             .replace("\"typed\"", "\"plain\"")
-            .replace("username = \"oauth2\"", "username = \"someone\"")
             .replace("oauth/token", "oauth/token2");
         let id_relaxed = Config::parse(&relaxed)
             .unwrap()
@@ -719,9 +694,9 @@ username = "oauth2"
     }
 
     #[test]
-    fn username_is_only_for_oauth2_netrc() {
-        let basic = "[a]\nhost=\"h.example\"\ntype=\"basic\"\n[a.netrc]\nusername=\"u\"\n";
-        assert!(error(basic).contains("\"username\" is only valid for oauth2 profiles"));
+    fn the_netrc_table_takes_no_keys() {
+        let user = "[a]\nhost=\"h.example\"\ntype=\"basic\"\n[a.netrc]\nusername=\"u\"\n";
+        assert_eq!(error(user), "profile \"a\": unknown key \"username\"");
     }
 
     #[test]

@@ -20,8 +20,7 @@ fn valid_file_with_every_profile_shape_lists() {
     let config = format!(
         "{CONFIG}\n[work]\nhost = \"github.com\"\ntype = \"oauth2\"\nclient_id = \"c\"\n\
          flow = \"authorization_code\"\nauthorization_endpoint = \"https://github.com/a\"\n\
-         token_endpoint = \"https://github.com/t\"\n[work.access-token]\n[work.netrc]\n\
-         username = \"robot\"\n"
+         token_endpoint = \"https://github.com/t\"\n[work.access-token]\n[work.netrc]\n"
     );
     let ws = Workspace::new(&config);
     ws.cmd()
@@ -83,11 +82,18 @@ fn rejects_bad_hosts_endpoints_and_style() {
 }
 
 #[test]
-fn rejects_username_on_basic_and_oauth_keys_on_basic() {
-    fails_with(
-        &format!("{BASIC}[a.netrc]\nusername = \"u\"\n"),
-        "\"username\" is only valid for oauth2 profiles",
-    );
+fn rejects_netrc_keys_and_oauth_keys_on_basic() {
+    for profile in [
+        format!("{BASIC}[a.netrc]\nusername = \"u\"\n"),
+        format!("{BASIC}[a.netrc]\nlogin = \"u\"\n"),
+    ] {
+        let key = if profile.contains("username") {
+            "username"
+        } else {
+            "login"
+        };
+        fails_with(&profile, &format!("profile \"a\": unknown key \"{key}\""));
+    }
     fails_with(
         &format!("{BASIC}client_id = \"c\"\n"),
         "\"client_id\" is only valid for oauth2 profiles",

@@ -48,5 +48,5 @@ style = "typed"       # "plain" renders host=<token> (github.com, Gitea, Forgejo
                        # profiles), which is what GitLab expects. Default: plain for github.com,
                        # typed for every other host.
 
-[mono.netrc]
-username = "oauth2"    # netrc login for OAuth profiles (default "oauth2")
+[mono.netrc]           # also present it through netrc; takes no keys. The login is the username
+                       # given at login (basic profiles) or "oauth2" (OAuth profiles).

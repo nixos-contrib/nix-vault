@@ -161,21 +161,18 @@ fn style_can_be_set_and_both_mechanisms_can_be_used_together() {
 }
 
 #[test]
-fn oauth_netrc_uses_the_configured_or_default_username() {
-    let config = |extra: &str| format!("{CONFIG}\n[company.netrc]\n{extra}\n");
-    for (extra, expected) in [("", "oauth2"), ("username = \"robot\"", "robot")] {
-        let ws = Workspace::new(&config(extra));
-        ws.seed_oauth("company", &company_identity(), FAKE_TOKEN, None, None);
-        let (stdout, _) = run(&ws, &["company"]);
-        assert!(
-            stdout.contains(&format!(
-                "machine gitlab.example.com login {expected} password {FAKE_TOKEN}"
-            )),
-            "{stdout}"
-        );
-        // Only the netrc sub-table exists, so there is no access token
-        assert!(!stdout.contains("access-tokens"));
-    }
+fn oauth_netrc_uses_the_fixed_oauth2_username() {
+    let ws = Workspace::new(&format!("{CONFIG}\n[company.netrc]\n"));
+    ws.seed_oauth("company", &company_identity(), FAKE_TOKEN, None, None);
+    let (stdout, _) = run(&ws, &["company"]);
+    assert!(
+        stdout.contains(&format!(
+            "machine gitlab.example.com login oauth2 password {FAKE_TOKEN}"
+        )),
+        "{stdout}"
+    );
+    // Only the netrc sub-table exists, so there is no access token
+    assert!(!stdout.contains("access-tokens"));
 }
 
 #[test]

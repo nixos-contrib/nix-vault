@@ -59,7 +59,7 @@ groups, inheritance or reusable sources.
 |-----------|---------|
 | none | oauth2 profiles use a Nix **access token**; basic profiles use **netrc** |
 | `[<profile>.access-token]` | present the credential as an `access-tokens` entry. Optional `style`: `plain` (`host=<token>`: github.com, Gitea, Forgejo) or `typed` (`host=OAuth2:<token>`, or `host=PAT:<token>` for basic profiles: GitLab). Default: `plain` for the host `github.com`, otherwise `typed`. A basic profile used this way must hold a personal access token as its password. |
-| `[<profile>.netrc]` | present the credential through netrc. Optional `username` (oauth2 profiles only, default `oauth2`); basic profiles use the username given at login. |
+| `[<profile>.netrc]` | present the credential through netrc. The table takes no keys: basic profiles use the username given at login, oauth2 profiles use `oauth2`. |
 
 Use both sub-tables to present one profile both ways. Access tokens are used by Nix's own forge
 fetchers (flake inputs and `nix flake update`); netrc covers HTTP downloads and binary caches.

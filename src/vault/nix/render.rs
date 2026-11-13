@@ -25,11 +25,11 @@ fn secret_of<'a>(profile: &Profile, credential: &'a Credential) -> Result<&'a Se
 }
 
 /// Returns the netrc entry for `profile`: the stored username and password for basic profiles,
-/// and the configured (default `oauth2`) username with the access token for oauth2 profiles.
+/// and the fixed username `oauth2` with the access token for oauth2 profiles.
 pub fn netrc_entry(profile: &Profile, credential: &Credential) -> Result<Entry> {
     let login = match (&profile.kind, &credential.basic) {
         (Kind::Basic, Some(basic)) => basic.username.expose().to_string(),
-        (Kind::OAuth2(_), _) => profile.oauth_netrc_username(),
+        (Kind::OAuth2(_), _) => "oauth2".to_string(),
         _ => return Err(mismatch(profile)),
     };
     Ok(Entry {
@@ -155,15 +155,12 @@ mod tests {
 
     #[test]
     fn netrc_entries_use_the_right_login() {
-        let c = config("", "[o.netrc]\nusername=\"robot\"", "h.example");
+        let c = config("", "[o.netrc]", "h.example");
         let (b, o) = (&c.profiles[0], &c.profiles[1]);
         let e = netrc_entry(b, &basic_cred(b)).unwrap();
         assert_eq!((e.login.as_str(), e.password.expose()), ("alice", "pat-1"));
         let e = netrc_entry(o, &oauth_cred(o)).unwrap();
-        assert_eq!((e.login.as_str(), e.password.expose()), ("robot", "tok-1"));
-        let c = config("", "", "h.example");
-        let o = &c.profiles[1];
-        assert_eq!(netrc_entry(o, &oauth_cred(o)).unwrap().login, "oauth2");
+        assert_eq!((e.login.as_str(), e.password.expose()), ("oauth2", "tok-1"));
     }
 
     #[test]

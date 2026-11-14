@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/nixos-contrib/nix-vault/compare/v0.4.0...v0.5.0) (2026-11-14)
+
+
+### Features
+
+* discover an oauth2 profile's endpoints from its issuer's metadata ([#20](https://github.com/nixos-contrib/nix-vault/issues/20)) ([eb81179](https://github.com/nixos-contrib/nix-vault/commit/eb811791f22d883ac29c6d8310e4a8b63312e7e3))
+
 ## [0.4.0](https://github.com/nixos-contrib/nix-vault/compare/v0.3.0...v0.4.0) (2026-11-13)
 
 

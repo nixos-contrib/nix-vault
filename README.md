@@ -26,11 +26,6 @@ nix-vault login --profile cache                 # once
 nix-vault exec -p company -p cache -- nix build # credentials exist only for this command
 ```
 
-| | Ships as | What it is |
-|---|---|---|
-| `nix-vault` | A single binary: [GitHub Releases](https://github.com/nixos-contrib/nix-vault/releases), `cargo install`, or `nix run` | The CLI: `login`, `exec`, `logout` and `list`. |
-| [`config.toml`](docs/configuration.md) | `~/.config/nix-vault/config.toml` | Profiles: one host and one authentication type each. It never holds a secret. |
-
 ## How it works
 
 ```mermaid
@@ -103,7 +98,8 @@ without a keychain can use environment variables or an opt-in encrypted file sto
    [company.oauth2]
    client_id = "public-client-id"
    flow = "device"                          # or "authorization_code" (PKCE)
-   issuer = "https://gitlab.example.com"    # discover the endpoints, or write them out
+   device_authorization_endpoint = "https://gitlab.example.com/oauth/authorize_device"
+   token_endpoint = "https://gitlab.example.com/oauth/token"
    scopes = ["read_api"]
    ```
 2. **Log in** once: `nix-vault login --profile company`. A browser step is shown for OAuth; a
@@ -112,7 +108,8 @@ without a keychain can use environment variables or an opt-in encrypted file sto
 4. **Check** with `nix-vault list`: names, hosts, types and expiry, never a secret.
 
 The file never holds usernames, passwords, access tokens or refresh tokens, and the whole file is
-validated before any command runs. A full example is [`config.example.toml`](config.example.toml).
+validated before any command runs. A provider that publishes metadata can be named with `issuer`
+instead of its endpoints: see [endpoint discovery](docs/configuration.md#endpoint-discovery). A full example is [`config.example.toml`](config.example.toml).
 
 ## Commands
 

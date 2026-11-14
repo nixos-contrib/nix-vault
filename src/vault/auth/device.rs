@@ -8,7 +8,10 @@ use oauth2::{
 };
 
 use crate::vault::{
-    auth::token::{client_id, describe, http_client, token_url, TokenSet},
+    auth::{
+        discovery::resolve,
+        token::{client_id, describe, http_client, token_url, TokenSet},
+    },
     config::OAuth,
     Error, Result,
 };
@@ -16,6 +19,7 @@ use crate::vault::{
 /// Runs the device flow: prints the verification URL and user code, waits for the user to
 /// approve in a browser, and returns the tokens. Nothing is stored here.
 pub fn login(profile: &str, oauth: &OAuth) -> Result<TokenSet> {
+    let oauth = &resolve(oauth)?;
     let endpoint = oauth
         .device_authorization_endpoint
         .clone()

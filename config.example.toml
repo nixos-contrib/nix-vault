@@ -29,6 +29,17 @@ device_authorization_endpoint = "https://gitlab.example.com/oauth/authorize_devi
 token_endpoint = "https://gitlab.example.com/oauth/token"
 scopes = ["read_api"]
 
+# A provider that publishes metadata (RFC 8414 or OpenID Connect): name the issuer and the
+# endpoints are discovered when needed. Endpoints written here override the discovered ones.
+[sts]
+host = "sts.example.com"
+type = "oauth2"
+
+[sts.oauth2]
+client_id = "public-client-id"
+flow = "device"
+issuer = "https://idp.example.com"
+
 # github.com with the authorization code flow. The access token is the bare token for this host.
 [github]
 host = "github.com"

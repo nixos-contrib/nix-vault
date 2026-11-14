@@ -26,6 +26,29 @@ validated before any command runs (a sub-table that does not match the profile's
 rejected); errors name the profile and the key. There are no profile
 groups, inheritance or reusable sources.
 
+## Endpoint discovery
+
+An oauth2 profile may set `issuer` instead of spelling out its endpoints. nix-vault then reads the
+provider's metadata, from `<origin>/.well-known/oauth-authorization-server<path>` (RFC 8414) or,
+failing that, `<issuer>/.well-known/openid-configuration` (OpenID Connect), and takes the
+`token_endpoint` and the endpoint of the chosen flow from it:
+
+```toml
+[company.oauth2]
+client_id = "public-client-id"
+flow = "device"
+issuer = "https://idp.example.com"
+```
+
+* An endpoint written in the profile always wins over the discovered one, so a provider with wrong
+  or missing metadata can be fixed key by key. GitHub's OAuth apps publish no metadata: keep
+  spelling those endpoints out.
+* The metadata is fetched only when a command talks to the provider (login, refresh), once per
+  process, and not at all when every endpoint is set. `list` and a stored, valid credential never
+  touch the network for it.
+* The document's `issuer` must equal the configured one, and every endpoint taken from it must use
+  https, like the ones in the file.
+
 ## How credentials reach Nix
 
 | `[<profile>.nix]` | Meaning |

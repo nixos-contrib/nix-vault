@@ -24,9 +24,10 @@ const SECRET_KEYS: [&str; 6] = [
     "username",
 ];
 /// Keys valid inside `[<name>.oauth2]`.
-const OAUTH_KEYS: [&str; 6] = [
+const OAUTH_KEYS: [&str; 7] = [
     "client_id",
     "flow",
+    "issuer",
     "device_authorization_endpoint",
     "authorization_endpoint",
     "token_endpoint",
@@ -76,8 +77,10 @@ pub struct OAuth {
     pub device_authorization_endpoint: Option<String>,
     /// Authorization endpoint (flow `authorization_code`).
     pub authorization_endpoint: Option<String>,
-    /// Token endpoint.
-    pub token_endpoint: String,
+    /// Token endpoint. Absent when it is to be found through `issuer`.
+    pub token_endpoint: Option<String>,
+    /// Issuer URL whose discovery document supplies the endpoints that are not set here.
+    pub issuer: Option<String>,
     /// Requested scopes.
     pub scopes: Vec<String>,
     /// Fixed loopback port for the browser redirect (flow `authorization_code`); a random free
@@ -388,17 +391,27 @@ fn parse_host(profile: &str, host: &str) -> Result<String> {
 }
 
 fn check_endpoint(profile: &str, key: &str, value: &str) -> Result<()> {
-    let https_error = || Error::config(format!("profile \"{profile}\": \"{key}\" must use https"));
     let url = Url::parse(value).map_err(|_| {
         Error::config(format!(
             "profile \"{profile}\": \"{key}\" must be a valid URL"
         ))
     })?;
+    if is_secure_url(&url) {
+        Ok(())
+    } else {
+        Err(Error::config(format!(
+            "profile \"{profile}\": \"{key}\" must use https"
+        )))
+    }
+}
+
+/// Whether an endpoint may carry credentials: https, or plain http to a loopback service (which
+/// the tests use). Applies to configured and discovered endpoints alike.
+pub fn is_secure_url(url: &Url) -> bool {
     match url.scheme() {
-        "https" => Ok(()),
-        // Plain http is accepted only for loopback services, which the tests use
-        "http" if matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]")) => Ok(()),
-        _ => Err(https_error()),
+        "https" => true,
+        "http" => matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]")),
+        _ => false,
     }
 }
 
@@ -473,7 +486,8 @@ struct RawOAuth {
     flow: Flow,
     device_authorization_endpoint: Option<String>,
     authorization_endpoint: Option<String>,
-    token_endpoint: String,
+    token_endpoint: Option<String>,
+    issuer: Option<String>,
     #[serde(default)]
     scopes: Vec<String>,
     redirect_port: Option<u16>,
@@ -925,8 +939,22 @@ fn validate_process(name: &str, p: RawProcess) -> Result<Process> {
 fn validate_oauth(name: &str, o: RawOAuth) -> Result<OAuth> {
     let config = |text: String| Error::config(format!("profile \"{name}\": {text}"));
     nonempty(name, "client_id", &o.client_id)?;
-    nonempty(name, "token_endpoint", &o.token_endpoint)?;
-    check_endpoint(name, "token_endpoint", &o.token_endpoint)?;
+    if let Some(issuer) = &o.issuer {
+        nonempty(name, "issuer", issuer)?;
+        check_endpoint(name, "issuer", issuer)?;
+    }
+    match (&o.token_endpoint, &o.issuer) {
+        (Some(endpoint), _) => {
+            nonempty(name, "token_endpoint", endpoint)?;
+            check_endpoint(name, "token_endpoint", endpoint)?;
+        }
+        (None, Some(_)) => {}
+        (None, None) => {
+            return Err(config(
+                "missing required key \"token_endpoint\" (or set \"issuer\" to discover it)".into(),
+            ))
+        }
+    }
     // Each flow needs its own endpoint and rejects the other's
     let (own, other, own_key, other_key, other_flow) = match o.flow {
         Flow::Device => (
@@ -949,11 +977,18 @@ fn validate_oauth(name: &str, o: RawOAuth) -> Result<OAuth> {
             "\"{other_key}\" is only valid for flow \"{other_flow}\""
         )));
     }
-    let endpoint = own
-        .as_deref()
-        .ok_or_else(|| config(format!("missing required key \"{own_key}\"")))?;
-    nonempty(name, own_key, endpoint)?;
-    check_endpoint(name, own_key, endpoint)?;
+    match (own, &o.issuer) {
+        (Some(endpoint), _) => {
+            nonempty(name, own_key, endpoint)?;
+            check_endpoint(name, own_key, endpoint)?;
+        }
+        (None, Some(_)) => {}
+        (None, None) => {
+            return Err(config(format!(
+                "missing required key \"{own_key}\" (or set \"issuer\" to discover it)"
+            )))
+        }
+    }
     if o.scopes
         .iter()
         .any(|s| s.is_empty() || s.chars().any(char::is_whitespace))
@@ -980,6 +1015,7 @@ fn validate_oauth(name: &str, o: RawOAuth) -> Result<OAuth> {
         device_authorization_endpoint: o.device_authorization_endpoint,
         authorization_endpoint: o.authorization_endpoint,
         token_endpoint: o.token_endpoint,
+        issuer: o.issuer,
         scopes: o.scopes,
         redirect_port: o.redirect_port,
     })
@@ -1310,6 +1346,27 @@ access_token_prefix = "by_type"
              flow = \"authorization_code\"\nauthorization_endpoint = \"https://idp.example.com/a\"\n\
              token_endpoint = \"https://idp.example.com/t\"\n{extra}\n"
         )
+    }
+
+    #[test]
+    fn issuer_replaces_the_endpoints() {
+        let only_issuer = "[sts]\nhost = \"sts.example.com\"\ntype = \"oauth2\"\n[sts.oauth2]\n\
+                           client_id = \"c\"\nflow = \"device\"\nissuer = \"https://idp.example.com\"\n";
+        let config = Config::parse(only_issuer).unwrap();
+        let Kind::OAuth2(oauth) = &config.profile("sts").unwrap().kind else {
+            panic!("not oauth2")
+        };
+        assert_eq!(oauth.issuer.as_deref(), Some("https://idp.example.com"));
+        assert!(oauth.token_endpoint.is_none());
+
+        let http = only_issuer.replace("https://idp", "http://idp");
+        assert!(error(&http).contains("\"issuer\" must use https"));
+        // Without an issuer the endpoints are still required
+        let none = only_issuer.replace("issuer = \"https://idp.example.com\"\n", "");
+        assert!(error(&none).contains("missing required key \"token_endpoint\""));
+        // An explicit endpoint is still checked next to an issuer
+        let bad = format!("{only_issuer}token_endpoint = \"http://idp.example.com/t\"\n");
+        assert!(error(&bad).contains("\"token_endpoint\" must use https"));
     }
 
     #[test]

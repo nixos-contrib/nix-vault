@@ -11,7 +11,10 @@ use oauth2::{
 };
 
 use crate::vault::{
-    auth::redact::{redact, Secret},
+    auth::{
+        discovery::resolve,
+        redact::{redact, Secret},
+    },
     config::OAuth,
     Error, Result,
 };
@@ -61,8 +64,11 @@ pub fn http_client() -> Result<HttpClient> {
 
 /// Returns the token URL of a profile.
 pub fn token_url(oauth: &OAuth) -> Result<TokenUrl> {
-    TokenUrl::new(oauth.token_endpoint.clone())
-        .map_err(|_| Error::Auth("the token endpoint is not a valid URL".into()))
+    let endpoint = oauth
+        .token_endpoint
+        .clone()
+        .ok_or_else(|| Error::Auth("the profile has no token_endpoint".into()))?;
+    TokenUrl::new(endpoint).map_err(|_| Error::Auth("the token endpoint is not a valid URL".into()))
 }
 
 /// Returns a client id wrapper.
@@ -93,6 +99,7 @@ where
 
 /// Exchanges a refresh token for a new token set. The provider may rotate the refresh token.
 pub fn refresh(oauth: &OAuth, refresh_token: &Secret) -> std::result::Result<TokenSet, String> {
+    let oauth = &resolve(oauth).map_err(|e| e.to_string())?;
     let http = http_client().map_err(|e| e.to_string())?;
     let url = token_url(oauth).map_err(|e| e.to_string())?;
     let client = BasicClient::new(client_id(oauth))

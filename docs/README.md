@@ -15,7 +15,8 @@ flowchart TD
 
 | Page | What is in it |
 |------|---------------|
-| [configuration.md](configuration.md) | The config file, profile types and how credentials reach Nix |
+| [configuration.md](configuration.md) | The config file, profile types, endpoint discovery and how credentials reach Nix |
+| [commands.md](commands.md) | `login`, `exec`, `logout`, `list` and the exit statuses |
 | [delivery.md](delivery.md) | What `exec` does to your Nix setup |
 | [cloudflare-access.md](cloudflare-access.md) | The reverse proxy: service tokens, OIDC with renewal, custom headers |
 | [process-profiles.md](process-profiles.md) | A helper command prints the credential (for example `cloudflared`) |

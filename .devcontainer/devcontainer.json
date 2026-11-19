@@ -1,10 +1,5 @@
 {
   "name": "nix-vault",
-  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
-  "features": {
-    "ghcr.io/devcontainers/features/nix:1": {
-      "extraNixConfig": "experimental-features = nix-command flakes"
-    }
-  },
+  "image": "ghcr.io/nixos-contrib/nix-devcontainer:1",
   "postCreateCommand": "nix develop --command cargo --version"
 }
